@@ -1,115 +1,101 @@
-# pylint: disable=W0702, C0325
-
-import ccxt.async_support as ccxt
-from typing import List, Tuple
-from dataclasses import dataclass
+import math
 import networkx as nx
+from triangular_arbitrage.exchange import get_exchange_data
 
-import octobot_commons.symbols as symbols
-import octobot_commons.constants as constants
-
-
-@dataclass
-class ShortTicker:
-    symbol: symbols.Symbol
-    last_price: float
-    reversed: bool = False
-
-
-async def fetch_tickers(exchange):
-    return await exchange.fetch_tickers() if exchange.has['fetchTickers'] else []
-
-
-def get_symbol_from_key(key_symbol: str) -> symbols.Symbol:
-    try:
-        return symbols.parse_symbol(key_symbol)
-    except:
-        return None
-
-
-def is_delisted_symbols(exchange_time, ticker,
-                        threshold=1 * constants.DAYS_TO_SECONDS * constants.MSECONDS_TO_SECONDS) -> bool:
-    ticker_time = ticker['timestamp']
-    return ticker_time is not None and not (exchange_time - ticker_time <= threshold)
-
-
-def get_last_prices(exchange_time, tickers, ignored_symbols, whitelisted_symbols=None):
-    return [
-        ShortTicker(symbol=get_symbol_from_key(key),
-                    last_price=tickers[key]['close'])
-        for key, _ in tickers.items()
-        if tickers[key]['close'] is not None
-           and not is_delisted_symbols(exchange_time, tickers[key])
-           and str(get_symbol_from_key(key)) not in ignored_symbols
-           and (whitelisted_symbols is None or str(get_symbol_from_key(key)) in whitelisted_symbols)
-    ]
-
-
-def get_best_triangular_opportunity(tickers: List[ShortTicker]) -> Tuple[List[ShortTicker], float]:
-    # Build a directed graph of currencies
-    return get_best_opportunity(tickers, 3)
-
-
-def get_best_opportunity(tickers: List[ShortTicker], max_cycle: int = 10) -> Tuple[List[ShortTicker], float]:
-    # Build a directed graph of currencies
+def build_graph(tickers, trade_fee):
+    """
+    Builds a directed graph from exchange tickers, with edge weights calculated
+    for arbitrage detection.
+    """
     graph = nx.DiGraph()
+    for symbol, ticker in tickers.items():
+        if ticker.get('last') is None or ticker['last'] == 0:
+            continue
+        try:
+            symbol_1, symbol_2 = symbol.split('/')
+        except ValueError:
+            continue
 
-    for ticker in tickers:
-        if ticker.symbol is not None:
-            graph.add_edge(ticker.symbol.base, ticker.symbol.quote, ticker=ticker)
-            graph.add_edge(ticker.symbol.quote, ticker.symbol.base,
-                           ticker=ShortTicker(symbols.Symbol(f"{ticker.symbol.quote}/{ticker.symbol.base}"),
-                                              1 / ticker.last_price, reversed=True))
+        price = ticker['last']
+        
+        graph.add_edge(
+            symbol_2,
+            symbol_1,
+            weight=-math.log((1 / price) * (1 - trade_fee))
+        )
+        graph.add_edge(
+            symbol_1,
+            symbol_2,
+            weight=-math.log(price * (1 - trade_fee))
+        )
+    return graph
 
-    best_profit = 1
-    best_cycle = None
-
-    # Find all cycles in the graph with a length <= max_cycle
+def find_opportunities(graph):
+    """
+    Finds profitable arbitrage cycles in the graph by checking all simple cycles.
+    """
+    profitable_cycles = []
+    
+    # This is the most time-consuming part. We are iterating through all possible cycles.
     for cycle in nx.simple_cycles(graph):
-        if len(cycle) > max_cycle:
-            continue  # Skip cycles longer than max_cycle
+        if len(cycle) < 2:
+            continue
 
-        profit = 1
-        tickers_in_cycle = []
+        path = cycle + [cycle[0]]
+        cycle_weight = sum(graph[u][v]['weight'] for u, v in zip(path, path[1:]))
 
-        # Calculate the profits along the cycle
-        for i, base in enumerate(cycle):
-            quote = cycle[(i + 1) % len(cycle)]  # Wrap around to complete the cycle
-            ticker = graph[base][quote]['ticker']
-            tickers_in_cycle.append(ticker)
-            profit *= ticker.last_price
+        if cycle_weight < 0:
+            profit_percentage = (math.exp(-cycle_weight) - 1) * 100
+            profitable_cycles.append((cycle, profit_percentage))
 
-        if profit > best_profit:
-            best_profit = profit
-            best_cycle = tickers_in_cycle
+    profitable_cycles.sort(key=lambda x: x[1], reverse=True)
+    return profitable_cycles
 
-    if best_cycle is not None:
-        best_cycle = [
-            ShortTicker(symbols.Symbol(f"{ticker.symbol.quote}/{ticker.symbol.base}"), ticker.last_price, reversed=True)
-            if ticker.reversed else ticker
-            for ticker in best_cycle
-        ]
+async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelisted_symbols=None):
+    """
+    The main function to run the arbitrage detection process. It fetches data,
+    builds the graph, finds opportunities, and prints the results.
+    """
+    if ignored_symbols is None:
+        ignored_symbols = []
 
-    return best_cycle, best_profit
+    try:
+        # --- Step 1: Fetching Data ---
+        print("  -> Step 1: Fetching market data from exchange...")
+        tickers, exchange_time = await get_exchange_data(exchange_name)
+        print(f"  -> Found {len(tickers)} available trading pairs.")
 
+    except Exception as e:
+        print(f"Error: Could not fetch data from {exchange_name}. Details: {e}")
+        return
 
-async def get_exchange_data(exchange_name):
-    exchange_class = getattr(ccxt, exchange_name)
-    exchange = exchange_class()
-    tickers = await fetch_tickers(exchange)
-    exchange_time = exchange.milliseconds()
-    await exchange.close()
-    return tickers, exchange_time
+    # --- Step 2: Building Graph ---
+    print("  -> Step 2: Building currency graph...")
+    filtered_tickers = {
+        s: t for s, t in tickers.items()
+        if (not whitelisted_symbols or s in whitelisted_symbols) and s not in ignored_symbols
+    }
 
+    if not filtered_tickers:
+        print("Error: No valid trading pairs found after filtering. Check your symbol configuration.")
+        return
 
-async def get_exchange_last_prices(exchange_name, ignored_symbols, whitelisted_symbols=None):
-    tickers, exchange_time = await get_exchange_data(exchange_name)
-    last_prices = get_last_prices(exchange_time, tickers, ignored_symbols, whitelisted_symbols)
-    return last_prices
+    graph = build_graph(filtered_tickers, trade_fee)
+    print(f"  -> Graph built with {len(graph.nodes)} currencies and {len(graph.edges)} potential trades.")
 
+    # --- Step 3: Finding Opportunities ---
+    print("  -> Step 3: Analyzing graph for profitable cycles (this may take a while)...")
+    opportunities = find_opportunities(graph)
+    print("  -> Analysis complete.")
 
-async def run_detection(exchange_name, ignored_symbols=None, whitelisted_symbols=None, max_cycle=10):
-    last_prices = await get_exchange_last_prices(exchange_name, ignored_symbols or [], whitelisted_symbols)
-    # default is the best opportunity for all cycles
-    best_opportunity, best_profit = get_best_opportunity(last_prices, max_cycle=max_cycle)
-    return best_opportunity, best_profit
+    if opportunities:
+        fee_percentage = trade_fee * 100
+        best_cycle, best_profit = opportunities[0]
+        
+        print("\n" + "=" * 70)
+        print(f"Success! Arbitrage Opportunity Found on {exchange_name.capitalize()}!")
+        print(f"  Estimated Profit: {best_profit:.4f}% (after {fee_percentage:.2f}% fee per trade)")
+        print(f"  Path: {' -> '.join(best_cycle)} -> {best_cycle[0]}")
+        print("=" * 70 + "\n")
+    else:
+        print(f"\nNo arbitrage opportunities found on {exchange_name} at this time.\n")
