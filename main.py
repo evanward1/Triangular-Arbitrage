@@ -14,7 +14,7 @@ if __name__ == "__main__":
     # --- CONFIGURATION ---
     # The exchange you want to use (e.g., "coinbase", "binance", "kraken")
     # Make sure it's a valid exchange_id from the ccxt library
-    exchange_name = "coinbase"
+    exchange_name = "binanceus"
 
     # The trading fee as a percentage (e.g., 0.1 for 0.1%)
     # This is crucial for realistic profit calculation.
