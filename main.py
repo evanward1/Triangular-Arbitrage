@@ -17,7 +17,7 @@ if __name__ == "__main__":
         s = time.perf_counter()
 
     # --- CONFIGURATION ---
-    exchange_name = "coinbase"
+    exchange_name = "binanceus"
     FEE_PERCENTAGE = 0.1
     
     # --- API KEY CONFIGURATION ---
