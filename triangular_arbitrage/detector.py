@@ -39,24 +39,22 @@ def find_opportunities(graph):
     for node in graph.nodes:
         try:
             # nx.find_negative_cycle finds a single profitable arbitrage opportunity.
-            # It returns a list of nodes where the start and end nodes are the same.
             negative_cycle = nx.find_negative_cycle(graph, source=node, weight='weight')
             
-            # Create a list of edges from the cycle nodes to calculate the total weight
             edges = list(zip(negative_cycle, negative_cycle[1:]))
             
             cycle_weight = sum(graph[u][v]['weight'] for u, v in edges)
             profit_percentage = (math.exp(-cycle_weight) - 1) * 100
             
             # Return the cycle for display (without the repeated end node) and the profit
-            return [(negative_cycle[:-1], profit_percentage)]
+            return (negative_cycle[:-1], profit_percentage)
             
         except nx.NetworkXError:
             # This error means no negative cycle was found from the current starting node.
             continue
             
     # If the loop completes without finding any negative cycles
-    return []
+    return None
 
 async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelisted_symbols=None):
     """
@@ -74,7 +72,7 @@ async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelis
 
     except Exception as e:
         print(f"Error: Could not fetch data from {exchange_name}. Details: {e}")
-        return
+        return None
 
     # --- Step 2: Building Graph ---
     print("  -> Step 2: Building currency graph...")
@@ -85,29 +83,31 @@ async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelis
 
     if not filtered_tickers:
         print("Error: No valid trading pairs found after filtering. Check your symbol configuration.")
-        return
+        return None
 
     graph = build_graph(filtered_tickers, trade_fee)
     print(f"  -> Graph built with {len(graph.nodes)} currencies and {len(graph.edges)} potential trades.")
 
     # --- Step 3: Finding Opportunities ---
     print("  -> Step 3: Analyzing graph for best trading cycles...")
-    opportunities = find_opportunities(graph)
+    opportunity = find_opportunities(graph)
     print("  -> Analysis complete.")
 
-    if opportunities:
+    if opportunity:
+        cycle, profit = opportunity
         fee_percentage = trade_fee * 100
         
         print("\n" + "=" * 70)
-        print(f"Top Potential Trade Path on {exchange_name.capitalize()}")
+        print(f"Found Potential Trade Path on {exchange_name.capitalize()}")
         print(f"(Includes {fee_percentage:.2f}% fee per trade)")
         print("=" * 70)
 
-        for i, (cycle, profit) in enumerate(opportunities):
-            status = "Profit" if profit > 0 else "Loss"
-            print(f"\n#{i+1} | Estimated {status}: {profit:.4f}%")
-            print(f"  Path: {' -> '.join(cycle)} -> {cycle[0]}")
+        status = "Profit" if profit > 0 else "Loss"
+        print(f"\nEstimated {status}: {profit:.4f}%")
+        print(f"  Path: {' -> '.join(cycle)} -> {cycle[0]}")
         
         print("\n" + "=" * 70 + "\n")
+        return opportunity
     else:
         print(f"\nNo trading cycles found on {exchange_name} at this time.\n")
+        return None
