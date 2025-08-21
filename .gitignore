@@ -135,3 +135,5 @@ cython_debug/
 # env
 .env
 .env.local
+
+.DS_Store
