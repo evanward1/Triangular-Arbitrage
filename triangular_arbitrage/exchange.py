@@ -1,10 +1,19 @@
+# triangular_arbitrage/exchange.py
+
 import ccxt.async_support as ccxt
 
 async def get_exchange_data(exchange_name):
     """
     Connects to the specified exchange and fetches the latest market tickers.
     """
+    # --- defensive check ---
+    if not isinstance(exchange_name, str):
+        raise TypeError(f"FATAL: The exchange name must be a string (e.g., 'coinbase'), but received an object of type {type(exchange_name).__name__}.")
+
     # Dynamically get the exchange class from the ccxt library
+    if not hasattr(ccxt, exchange_name):
+         raise ValueError(f"FATAL: The exchange '{exchange_name}' is not supported by the ccxt library.")
+
     exchange_class = getattr(ccxt, exchange_name)
     
     # Instantiate the exchange
@@ -23,8 +32,7 @@ async def get_exchange_data(exchange_name):
         return tickers, exchange_time
         
     except Exception as e:
-        # If something goes wrong (e.g., network error, invalid API key),
-        # close the connection and raise the error.
+        # If something goes wrong, close the connection and raise the error.
         await exchange.close()
         raise e
     finally:
