@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-import sys # Import sys to read command-line arguments
+import sys
 import ccxt.async_support as ccxt
 from dotenv import load_dotenv
 import octobot_commons.os_util as os_util
@@ -39,22 +39,15 @@ async def show_wallet_balance(exchange):
             print(f"  Available:        {free:.8f}")
             print(f"  In Open Orders:   {used:.8f}")
 
-            # --- THIS IS THE PART THAT GETS YOUR PUBLIC ADDRESS ---
             try:
-                # 1. Ask the exchange for the deposit address for this specific asset.
                 address_info = await exchange.fetch_deposit_address(asset)
-                
                 if address_info and 'address' in address_info:
-                    # 2. Print the public address it returns.
                     print(f"  Deposit Address:  {address_info['address']}")
-                    
-                    # 3. Also print the memo/tag if one is required for the deposit.
                     if 'tag' in address_info and address_info['tag']:
                         print(f"  -> Required Memo:  {address_info['tag']}")
                 else:
                      print("  Deposit Address:  Not available")
             except Exception:
-                # This handles cases where an address doesn't apply (like for USD).
                 print("  Deposit Address:  N/A (e.g., Fiat)")
         
         print("-" * 40 + "\n")
@@ -67,9 +60,8 @@ async def main():
     """
     Main execution function.
     """
-    load_dotenv() # Load environment variables from .env file
+    load_dotenv()
 
-    # --- Initialize Exchange for Wallet or Trading ---
     exchange_name = "coinbase"
     api_key = os.getenv("EXCHANGE_API_KEY")
     api_secret = os.getenv("EXCHANGE_API_SECRET")
@@ -82,15 +74,19 @@ async def main():
     exchange = exchange_class({
         'apiKey': api_key,
         'secret': api_secret,
+        # --- THIS IS THE FIX ---
+        # This option tells the library to use the 'cost' (e.g., amount of USDC)
+        # for market buy orders, which is what Coinbase requires.
+        'options': {
+            'createMarketBuyOrderRequiresPrice': False
+        }
     })
 
     try:
-        # Check for the --wallet flag
         if "--wallet" in sys.argv:
             await show_wallet_balance(exchange)
             return
 
-        # --- ARBITRAGE DETECTION LOGIC ---
         benchmark = os_util.parse_boolean_environment_var("IS_BENCHMARKING", "False")
         if benchmark:
             import time
@@ -103,34 +99,62 @@ async def main():
         # --- END CONFIGURATION ---
 
         print(f"Scanning for opportunities on {exchange_name}...")
+        
+        owned_assets = None
+        balances = {} # Initialize balances dictionary
+        
+        # --- CHECK FOR ACTIONABLE FLAG ---
+        if "--actionable" in sys.argv:
+            print("  -> Actionable mode: Checking your available assets...")
+            balances = await exchange.fetch_balance()
+            owned_assets = [
+                asset for asset, free_balance in balances.get('free', {}).items() if free_balance > 0.000001
+            ]
+            if not owned_assets:
+                print("  -> You have no assets available to trade. Exiting.")
+                return
+            print(f"  -> Found available assets: {', '.join(owned_assets)}")
+
         trade_fee = FEE_PERCENTAGE / 100
 
         opportunity = await detector.run_detection(
             exchange_name,
             trade_fee,
+            owned_assets=owned_assets,
             ignored_symbols=ignored_symbols,
             whitelisted_symbols=whitelisted_symbols
         )
 
         if opportunity and opportunity[1] > 0:
-            execute_choice = input("Profitable opportunity found. Do you want to attempt to execute this trade? (y/n): ").lower()
+            prompt_message = "Actionable trade found. Do you want to attempt to execute it? (y/n): " if owned_assets else "Profitable trade found. Do you want to attempt to execute it? (y/n): "
+            execute_choice = input(prompt_message).lower()
+            
             if execute_choice == 'y':
                 cycle, profit = opportunity
+                start_currency = cycle[0]
+                
+                # We need to fetch balances again if not in actionable mode
+                if not owned_assets:
+                    print("\nChecking account balance...")
+                    balances = await exchange.fetch_balance()
+
+                available_balance = balances.get('free', {}).get(start_currency, 0.0)
+                
+                if available_balance <= 0:
+                    print(f"Error: You have no available {start_currency} to trade.")
+                    return
+
+                print(f"\nYou have {available_balance:.8f} {start_currency} available.")
                 
                 try:
-                    initial_amount = float(input(f"Enter the amount of {cycle[0]} to trade: "))
+                    amount_str = input(f"Enter amount of {start_currency} to trade (or press Enter to use all): ")
+                    initial_amount = float(amount_str) if amount_str else available_balance
                 except ValueError:
                     print("Invalid amount. Exiting.")
                     return
 
-                print("\nChecking account balance...")
-                balances = await exchange.fetch_balance()
-                start_currency = cycle[0]
-                balance = balances.get('free', {}).get(start_currency, 0.0)
-
-                print(f"Available balance: {balance} {start_currency}")
-                if balance < initial_amount:
-                    print(f"Error: Insufficient funds. You have {balance} {start_currency}, but the trade requires {initial_amount} {start_currency}.")
+                if initial_amount > available_balance:
+                    print(f"Error: Insufficient funds. You only have {available_balance} {start_currency} available.")
                     return
 
                 await trade_executor.execute_cycle(exchange, cycle, initial_amount)
@@ -140,7 +164,7 @@ async def main():
             print(f"\n{__file__} executed in {elapsed:0.2f} seconds.")
             
     finally:
-        await exchange.close() # Ensure the connection is always closed
+        await exchange.close()
 
 
 if __name__ == "__main__":
