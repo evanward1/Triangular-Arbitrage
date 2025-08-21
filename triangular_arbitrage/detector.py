@@ -32,31 +32,51 @@ def build_graph(tickers, trade_fee):
         )
     return graph
 
-def find_opportunities(graph):
+def find_opportunities(graph, owned_assets=None):
     """
-    Finds the best trading cycles in the graph using negative cycle detection.
+    Finds the best trading cycles. If owned_assets is provided, it ensures the
+    found cycle starts with one of those assets.
     """
-    for node in graph.nodes:
+    temp_graph = graph.copy()
+
+    # Loop until we find a valid cycle or exhaust all possibilities
+    while True:
+        cycle = None
         try:
-            # nx.find_negative_cycle finds a single profitable arbitrage opportunity.
-            negative_cycle = nx.find_negative_cycle(graph, source=node, weight='weight')
-            
-            edges = list(zip(negative_cycle, negative_cycle[1:]))
-            
-            cycle_weight = sum(graph[u][v]['weight'] for u, v in edges)
-            profit_percentage = (math.exp(-cycle_weight) - 1) * 100
-            
-            # Return the cycle for display (without the repeated end node) and the profit
-            return (negative_cycle[:-1], profit_percentage)
-            
-        except nx.NetworkXError:
-            # This error means no negative cycle was found from the current starting node.
-            continue
-            
-    # If the loop completes without finding any negative cycles
+            # Find any negative cycle in the graph
+            # We can start from an arbitrary node; the algorithm will find a cycle if one exists
+            start_node = list(temp_graph.nodes)[0]
+            cycle = nx.find_negative_cycle(temp_graph, source=start_node)
+        except (nx.NetworkXError, IndexError):
+            # This means no more negative cycles can be found in the graph
+            return None
+
+        # If in actionable mode, check if the cycle starts with an owned asset
+        if owned_assets:
+            if cycle[0] in owned_assets:
+                # This is a valid, actionable cycle. We're done.
+                break 
+            else:
+                # This cycle is not actionable. "Disqualify" it by removing an edge
+                # and loop again to find the next best one.
+                u, v = cycle[0], cycle[1]
+                temp_graph.remove_edge(u, v)
+                continue
+        else:
+            # Not in actionable mode, so any cycle is fine.
+            break
+
+    # If we have a valid cycle, calculate its profit
+    if cycle:
+        edges = list(zip(cycle, cycle[1:]))
+        cycle_weight = sum(graph[u][v]['weight'] for u, v in edges)
+        profit_percentage = (math.exp(-cycle_weight) - 1) * 100
+        return (cycle[:-1], profit_percentage)
+    
     return None
 
-async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelisted_symbols=None):
+
+async def run_detection(exchange_name, trade_fee, owned_assets=None, ignored_symbols=None, whitelisted_symbols=None):
     """
     The main function to run the arbitrage detection process. It fetches data,
     builds the graph, finds opportunities, and prints the results.
@@ -65,7 +85,6 @@ async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelis
         ignored_symbols = []
 
     try:
-        # --- Step 1: Fetching Data ---
         print("  -> Step 1: Fetching market data from exchange...")
         tickers, exchange_time = await get_exchange_data(exchange_name)
         print(f"  -> Found {len(tickers)} available trading pairs.")
@@ -74,7 +93,6 @@ async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelis
         print(f"Error: Could not fetch data from {exchange_name}. Details: {e}")
         return None
 
-    # --- Step 2: Building Graph ---
     print("  -> Step 2: Building currency graph...")
     filtered_tickers = {
         s: t for s, t in tickers.items()
@@ -82,15 +100,15 @@ async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelis
     }
 
     if not filtered_tickers:
-        print("Error: No valid trading pairs found after filtering. Check your symbol configuration.")
+        print("Error: No valid trading pairs found after filtering.")
         return None
 
     graph = build_graph(filtered_tickers, trade_fee)
     print(f"  -> Graph built with {len(graph.nodes)} currencies and {len(graph.edges)} potential trades.")
 
-    # --- Step 3: Finding Opportunities ---
-    print("  -> Step 3: Analyzing graph for best trading cycles...")
-    opportunity = find_opportunities(graph)
+    search_type = "actionable" if owned_assets else "general"
+    print(f"  -> Step 3: Analyzing graph for {search_type} trading cycles...")
+    opportunity = find_opportunities(graph, owned_assets)
     print("  -> Analysis complete.")
 
     if opportunity:
@@ -98,7 +116,8 @@ async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelis
         fee_percentage = trade_fee * 100
         
         print("\n" + "=" * 70)
-        print(f"Found Potential Trade Path on {exchange_name.capitalize()}")
+        header = f"Actionable Trade Path Found on {exchange_name.capitalize()}" if owned_assets else f"Profitable Trade Path Found on {exchange_name.capitalize()}"
+        print(header)
         print(f"(Includes {fee_percentage:.2f}% fee per trade)")
         print("=" * 70)
 
@@ -109,5 +128,6 @@ async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelis
         print("\n" + "=" * 70 + "\n")
         return opportunity
     else:
-        print(f"\nNo trading cycles found on {exchange_name} at this time.\n")
+        message = "No profitable trading cycles found that start with your available assets." if owned_assets else "No profitable trading cycles found at this time."
+        print(f"\n{message}\n")
         return None

@@ -3,10 +3,7 @@
 async def execute_cycle(exchange, cycle, initial_amount):
     """
     Executes the series of trades for a profitable cycle.
-    
-    WARNING: This is a simplified example using market orders and does not
-    include error handling, slippage checks, or order book analysis.
-    Use with extreme caution.
+    Includes checks for minimum order amount and minimum order cost.
     """
     print("\n--- ATTEMPTING TO EXECUTE TRADE CYCLE ---")
     print("WARNING: Using market orders. Slippage may occur.")
@@ -40,10 +37,18 @@ async def execute_cycle(exchange, cycle, initial_amount):
                 print(f"Error: Could not find a valid market for {from_currency} -> {to_currency}")
                 return
 
-            # --- PRE-TRADE MINIMUM ORDER CHECK ---
+            # --- PRE-TRADE VALIDATION ---
             min_order_amount = market.get('limits', {}).get('amount', {}).get('min')
-            if min_order_amount and amount < min_order_amount:
-                print(f"Error: Order amount is too small. Minimum for {market['symbol']} is {min_order_amount}, but you are trying to trade {amount}.")
+            min_order_cost = market.get('limits', {}).get('cost', {}).get('min')
+            
+            # 1. Check if the AMOUNT of the coin is large enough
+            if order_side == 'sell' and min_order_amount and amount < min_order_amount:
+                print(f"Error: Order amount is too small. Minimum for {market['symbol']} is {min_order_amount} {market['base']}, but you are trying to trade {amount}.")
+                return
+
+            # 2. Check if the total COST (value) of the trade is large enough
+            if order_side == 'buy' and min_order_cost and amount < min_order_cost:
+                print(f"Error: Order value is too small. Minimum for {market['symbol']} is {min_order_cost} {market['quote']}, but your order is only worth {amount} {market['quote']}.")
                 return
 
             # Place the order based on the side
