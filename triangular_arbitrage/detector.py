@@ -34,25 +34,29 @@ def build_graph(tickers, trade_fee):
 
 def find_opportunities(graph):
     """
-    Finds the best trading cycles in the graph, even if they are not profitable.
+    Finds the best trading cycles in the graph using negative cycle detection.
     """
-    all_cycles = []
-    
-    # This is the most time-consuming part. We are iterating through all possible cycles.
-    for cycle in nx.simple_cycles(graph):
-        if len(cycle) < 2:
+    for node in graph.nodes:
+        try:
+            # nx.find_negative_cycle finds a single profitable arbitrage opportunity.
+            # It returns a list of nodes where the start and end nodes are the same.
+            negative_cycle = nx.find_negative_cycle(graph, source=node, weight='weight')
+            
+            # Create a list of edges from the cycle nodes to calculate the total weight
+            edges = list(zip(negative_cycle, negative_cycle[1:]))
+            
+            cycle_weight = sum(graph[u][v]['weight'] for u, v in edges)
+            profit_percentage = (math.exp(-cycle_weight) - 1) * 100
+            
+            # Return the cycle for display (without the repeated end node) and the profit
+            return [(negative_cycle[:-1], profit_percentage)]
+            
+        except nx.NetworkXError:
+            # This error means no negative cycle was found from the current starting node.
             continue
-
-        path = cycle + [cycle[0]]
-        cycle_weight = sum(graph[u][v]['weight'] for u, v in zip(path, path[1:]))
-
-        # Calculate profit/loss for all cycles, not just profitable ones
-        profit_percentage = (math.exp(-cycle_weight) - 1) * 100
-        all_cycles.append((cycle, profit_percentage))
-
-    # Sort by the most profitable (or least unprofitable)
-    all_cycles.sort(key=lambda x: x[1], reverse=True)
-    return all_cycles
+            
+    # If the loop completes without finding any negative cycles
+    return []
 
 async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelisted_symbols=None):
     """
@@ -87,7 +91,7 @@ async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelis
     print(f"  -> Graph built with {len(graph.nodes)} currencies and {len(graph.edges)} potential trades.")
 
     # --- Step 3: Finding Opportunities ---
-    print("  -> Step 3: Analyzing graph for best trading cycles (this may take a while)...")
+    print("  -> Step 3: Analyzing graph for best trading cycles...")
     opportunities = find_opportunities(graph)
     print("  -> Analysis complete.")
 
@@ -95,11 +99,11 @@ async def run_detection(exchange_name, trade_fee, ignored_symbols=None, whitelis
         fee_percentage = trade_fee * 100
         
         print("\n" + "=" * 70)
-        print(f"Top 5 Potential Trade Paths on {exchange_name.capitalize()}")
+        print(f"Top Potential Trade Path on {exchange_name.capitalize()}")
         print(f"(Includes {fee_percentage:.2f}% fee per trade)")
         print("=" * 70)
 
-        for i, (cycle, profit) in enumerate(opportunities[:5]):
+        for i, (cycle, profit) in enumerate(opportunities):
             status = "Profit" if profit > 0 else "Loss"
             print(f"\n#{i+1} | Estimated {status}: {profit:.4f}%")
             print(f"  Path: {' -> '.join(cycle)} -> {cycle[0]}")
