@@ -93,7 +93,11 @@ async def main():
         # --- CONFIGURATION ---
         FEE_PERCENTAGE = 0.1
         ignored_symbols = []
-        whitelisted_symbols = []
+        
+        # *** THIS IS THE FIX ***
+        # Only consider trading pairs where the quote currency is one we can actually hold and trade.
+        # This prevents errors with restricted fiat currencies like GBP, EUR, etc.
+        whitelisted_symbols = ["USDC", "USD"]
         # --- END CONFIGURATION ---
 
         print(f"Scanning for opportunities on {exchange_name}...")
@@ -122,10 +126,6 @@ async def main():
             whitelisted_symbols=whitelisted_symbols
         )
         
-        # --- MODIFIED LOGIC ---
-        # If an opportunity is found, proceed.
-        # For a dry run, we show the best opportunity even if it's not profitable.
-        # For a live run, it must be profitable.
         if opportunity and (opportunity[1] > 0 or is_dry_run):
             prompt_message = "Found an opportunity. Do you want to simulate/execute it? (y/n): "
             execute_choice = input(prompt_message).lower()
@@ -140,9 +140,8 @@ async def main():
 
                 available_balance = balances.get('free', {}).get(start_currency, 0.0)
                 
-                # For a general dry-run, we won't have a real balance, so we'll invent one for the simulation.
-                if available_balance <= 0 and is_dry_run and not "--actionable" in sys.argv:
-                    print(f"'{start_currency}' not in wallet. Simulating with a balance of 100 for dry run purposes.")
+                if available_balance <= 0 and is_dry_run:
+                    print(f"'{start_currency}' not in wallet or balance is zero. Simulating with a balance of 100 for dry run purposes.")
                     available_balance = 100.0
 
                 if available_balance <= 0:
