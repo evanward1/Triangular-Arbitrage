@@ -65,6 +65,7 @@ async def main():
     exchange_name = "coinbase"
     api_key = os.getenv("EXCHANGE_API_KEY")
     api_secret = os.getenv("EXCHANGE_API_SECRET")
+    is_dry_run = "--dry-run" in sys.argv
 
     if not api_key or not api_secret:
         print("Error: EXCHANGE_API_KEY or EXCHANGE_API_SECRET not found in .env file.")
@@ -74,9 +75,6 @@ async def main():
     exchange = exchange_class({
         'apiKey': api_key,
         'secret': api_secret,
-        # --- THIS IS THE FIX ---
-        # This option tells the library to use the 'cost' (e.g., amount of USDC)
-        # for market buy orders, which is what Coinbase requires.
         'options': {
             'createMarketBuyOrderRequiresPrice': False
         }
@@ -101,9 +99,8 @@ async def main():
         print(f"Scanning for opportunities on {exchange_name}...")
         
         owned_assets = None
-        balances = {} # Initialize balances dictionary
+        balances = {}
         
-        # --- CHECK FOR ACTIONABLE FLAG ---
         if "--actionable" in sys.argv:
             print("  -> Actionable mode: Checking your available assets...")
             balances = await exchange.fetch_balance()
@@ -124,22 +121,30 @@ async def main():
             ignored_symbols=ignored_symbols,
             whitelisted_symbols=whitelisted_symbols
         )
-
-        if opportunity and opportunity[1] > 0:
-            prompt_message = "Actionable trade found. Do you want to attempt to execute it? (y/n): " if owned_assets else "Profitable trade found. Do you want to attempt to execute it? (y/n): "
+        
+        # --- MODIFIED LOGIC ---
+        # If an opportunity is found, proceed.
+        # For a dry run, we show the best opportunity even if it's not profitable.
+        # For a live run, it must be profitable.
+        if opportunity and (opportunity[1] > 0 or is_dry_run):
+            prompt_message = "Found an opportunity. Do you want to simulate/execute it? (y/n): "
             execute_choice = input(prompt_message).lower()
             
             if execute_choice == 'y':
                 cycle, profit = opportunity
                 start_currency = cycle[0]
                 
-                # We need to fetch balances again if not in actionable mode
                 if not owned_assets:
-                    print("\nChecking account balance...")
+                    print("\nChecking account balance for starting currency...")
                     balances = await exchange.fetch_balance()
 
                 available_balance = balances.get('free', {}).get(start_currency, 0.0)
                 
+                # For a general dry-run, we won't have a real balance, so we'll invent one for the simulation.
+                if available_balance <= 0 and is_dry_run and not "--actionable" in sys.argv:
+                    print(f"'{start_currency}' not in wallet. Simulating with a balance of 100 for dry run purposes.")
+                    available_balance = 100.0
+
                 if available_balance <= 0:
                     print(f"Error: You have no available {start_currency} to trade.")
                     return
@@ -157,7 +162,7 @@ async def main():
                     print(f"Error: Insufficient funds. You only have {available_balance} {start_currency} available.")
                     return
 
-                await trade_executor.execute_cycle(exchange, cycle, initial_amount)
+                await trade_executor.execute_cycle(exchange, cycle, initial_amount, is_dry_run)
 
         if benchmark:
             elapsed = time.perf_counter() - s
