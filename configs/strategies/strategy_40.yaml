@@ -1,0 +1,25 @@
+name: strategy_40
+exchange: bybit
+trading_pairs_file: data/cycles/bybit_cycles_10.csv
+min_profit_bps: 17
+max_slippage_bps: 4
+max_leg_latency_ms: 193
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.6
+risk_controls:
+  max_open_cycles: 2
+  stop_after_consecutive_losses: 3
+fees:
+  taker_bps: 10
+  maker_bps: 3
+order:
+  type: market
+  allow_partial_fills: false
+simulation:
+  enable: true
+  book_depth_levels: 10
+  latency_ms: 94
+logging:
+  level: INFO
+  trade_csv: logs/trades_strategy_40.csv

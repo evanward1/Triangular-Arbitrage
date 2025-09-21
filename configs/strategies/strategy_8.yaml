@@ -1,0 +1,25 @@
+name: strategy_8
+exchange: kraken
+trading_pairs_file: data/cycles/kraken_cycles_8.csv
+min_profit_bps: 9
+max_slippage_bps: 9
+max_leg_latency_ms: 322
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.6
+risk_controls:
+  max_open_cycles: 1
+  stop_after_consecutive_losses: 6
+fees:
+  taker_bps: 10
+  maker_bps: 1
+order:
+  type: market
+  allow_partial_fills: false
+simulation:
+  enable: true
+  book_depth_levels: 9
+  latency_ms: 91
+logging:
+  level: INFO
+  trade_csv: logs/trades_strategy_8.csv
