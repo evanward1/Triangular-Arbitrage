@@ -1,0 +1,25 @@
+name: strategy_13
+exchange: kraken
+trading_pairs_file: data/cycles/kraken_cycles_13.csv
+min_profit_bps: 6
+max_slippage_bps: 6
+max_leg_latency_ms: 314
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.6
+risk_controls:
+  max_open_cycles: 3
+  stop_after_consecutive_losses: 4
+fees:
+  taker_bps: 8
+  maker_bps: 4
+order:
+  type: market
+  allow_partial_fills: false
+simulation:
+  enable: true
+  book_depth_levels: 5
+  latency_ms: 99
+logging:
+  level: INFO
+  trade_csv: logs/trades_strategy_13.csv

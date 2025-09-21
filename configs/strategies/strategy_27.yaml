@@ -1,0 +1,25 @@
+name: strategy_27
+exchange: coinbase
+trading_pairs_file: data/cycles/coinbase_cycles_27.csv
+min_profit_bps: 12
+max_slippage_bps: 9
+max_leg_latency_ms: 244
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.6
+risk_controls:
+  max_open_cycles: 3
+  stop_after_consecutive_losses: 6
+fees:
+  taker_bps: 6
+  maker_bps: 4
+order:
+  type: market
+  allow_partial_fills: false
+simulation:
+  enable: true
+  book_depth_levels: 5
+  latency_ms: 146
+logging:
+  level: INFO
+  trade_csv: logs/trades_strategy_27.csv

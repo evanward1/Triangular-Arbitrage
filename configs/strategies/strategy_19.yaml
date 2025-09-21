@@ -1,0 +1,25 @@
+name: strategy_19
+exchange: okx
+trading_pairs_file: data/cycles/okx_cycles_19.csv
+min_profit_bps: 10
+max_slippage_bps: 8
+max_leg_latency_ms: 223
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.6
+risk_controls:
+  max_open_cycles: 3
+  stop_after_consecutive_losses: 4
+fees:
+  taker_bps: 11
+  maker_bps: 1
+order:
+  type: market
+  allow_partial_fills: false
+simulation:
+  enable: true
+  book_depth_levels: 9
+  latency_ms: 62
+logging:
+  level: INFO
+  trade_csv: logs/trades_strategy_19.csv

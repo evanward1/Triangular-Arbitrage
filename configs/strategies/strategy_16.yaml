@@ -1,0 +1,25 @@
+name: strategy_16
+exchange: binance
+trading_pairs_file: data/cycles/binance_cycles_16.csv
+min_profit_bps: 6
+max_slippage_bps: 7
+max_leg_latency_ms: 278
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.2
+risk_controls:
+  max_open_cycles: 3
+  stop_after_consecutive_losses: 4
+fees:
+  taker_bps: 9
+  maker_bps: 4
+order:
+  type: market
+  allow_partial_fills: false
+simulation:
+  enable: true
+  book_depth_levels: 8
+  latency_ms: 130
+logging:
+  level: INFO
+  trade_csv: logs/trades_strategy_16.csv
