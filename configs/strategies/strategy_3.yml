@@ -1,0 +1,4 @@
+strategy_name: HighFrequency_v3
+parameters:
+  min_profit_margin: 0.005
+  max_trade_size: 1000
