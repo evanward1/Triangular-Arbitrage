@@ -1,0 +1,96 @@
+# Example Robust Strategy Configuration
+# This demonstrates all available configuration options
+
+name: robust_triangular_arbitrage
+exchange: binance
+trading_pairs_file: data/cycles/binance_cycles_1.csv
+
+# Profit and slippage thresholds (in basis points)
+min_profit_bps: 15          # Minimum profit threshold (0.15%)
+max_slippage_bps: 25        # Maximum acceptable slippage (0.25%)
+
+# Maximum latency for each leg of the arbitrage cycle
+max_leg_latency_ms: 300
+
+# Capital allocation strategy
+capital_allocation:
+  mode: fixed_fraction      # Options: fixed_fraction, fixed_amount, progressive
+  fraction: 0.5             # Use 50% of available balance
+  # amount: 1000           # Alternative: fixed amount (if mode is fixed_amount)
+
+# Risk management controls
+risk_controls:
+  max_open_cycles: 3                    # Maximum concurrent cycles
+  stop_after_consecutive_losses: 5      # Stop after N consecutive losses
+  max_daily_loss: 1000                  # Maximum daily loss (optional)
+  max_position_size: 10000             # Maximum position size (optional)
+
+# Exchange fees configuration
+fees:
+  taker_bps: 10             # Taker fee in basis points (0.10%)
+  maker_bps: 5              # Maker fee in basis points (0.05%)
+
+# Order execution settings
+order:
+  type: market              # Options: market, limit, limit_maker
+  allow_partial_fills: true # Continue with partial fills
+  max_retries: 3            # Maximum order placement retries
+  retry_delay_ms: 1000      # Delay between retries (exponential backoff)
+  timeout_seconds: 30       # Order monitoring timeout
+
+# Panic sell configuration (for failure recovery)
+panic_sell:
+  enabled: true
+  base_currencies:          # Preferred stable currencies for panic sell
+    - USDC
+    - USD
+    - USDT
+    - BUSD
+  max_slippage_bps: 100     # Accept up to 1% slippage on panic sells
+  use_market_orders: true   # Use market orders for immediate execution
+
+# Pre-trade validation settings
+validation:
+  check_min_amounts: true       # Verify minimum order amounts
+  check_balances: true          # Verify sufficient balances
+  simulate_execution: true      # Simulate cycle before execution
+  max_simulation_slippage: 0.5  # Maximum simulated slippage percentage
+
+# State persistence settings
+state_management:
+  persist_to_disk: true         # Save state to disk for recovery
+  database_path: trade_state.db # State database location
+  cleanup_after_days: 7         # Auto-cleanup old records
+  backup_enabled: true          # Enable state backups
+  backup_interval_minutes: 60   # Backup interval
+
+# Advanced execution features
+execution:
+  parallel_cycles: false        # Execute multiple cycles in parallel
+  smart_routing: true           # Use smart order routing
+  iceberg_orders: false         # Split large orders
+  aggressive_mode: false        # Use aggressive pricing
+
+# Monitoring and alerting
+monitoring:
+  heartbeat_interval_seconds: 60
+  alert_on_failure: true
+  alert_on_panic_sell: true
+  webhook_url: null             # Optional webhook for alerts
+
+# Simulation settings (for backtesting)
+simulation:
+  enable: false
+  book_depth_levels: 5
+  latency_ms: 150
+  slippage_factor: 1.2
+  random_failures: false        # Simulate random failures
+  failure_rate: 0.05            # 5% failure rate
+
+# Logging configuration
+logging:
+  level: INFO                   # Options: DEBUG, INFO, WARNING, ERROR
+  trade_csv: logs/trades_robust.csv
+  enable_telegram: false        # Send logs to Telegram
+  telegram_token: null
+  telegram_chat_id: null
