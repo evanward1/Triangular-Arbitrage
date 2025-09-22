@@ -1,5 +1,16 @@
 # triangular_arbitrage/trade_executor.py
 import asyncio
+import logging
+from typing import List, Optional, Dict, Any
+from pathlib import Path
+import yaml
+from .execution_engine import (
+    StrategyExecutionEngine,
+    ConfigurationManager,
+    CycleState
+)
+
+logger = logging.getLogger(__name__)
 
 async def pre_trade_check(exchange, cycle, initial_amount):
     """
@@ -64,11 +75,10 @@ async def pre_trade_check(exchange, cycle, initial_amount):
     print("  -> Validation successful. All trade steps meet minimum requirements.")
     return True
 
-async def execute_cycle(exchange, cycle, initial_amount, is_dry_run=False):
+async def execute_cycle_legacy(exchange, cycle, initial_amount, is_dry_run=False):
     """
-    Executes the series of trades for a profitable cycle.
-    Includes checks for minimum order amount and minimum order cost.
-    Safely handles both dry-run simulations and live trades.
+    Legacy execution function for backward compatibility.
+    Used only for dry runs now. Live trades use the new engine.
     """
     # --- NEW: Run the pre-trade validation first ---
     is_valid = await pre_trade_check(exchange, cycle, initial_amount)
@@ -158,3 +168,129 @@ async def execute_cycle(exchange, cycle, initial_amount, is_dry_run=False):
             
     print("\n--- TRADE CYCLE EXECUTION ATTEMPT COMPLETE ---")
     print(f"Finished with approximately {amount:.8f} {from_currency}")
+
+
+async def execute_cycle(exchange, cycle, initial_amount, is_dry_run=False, strategy_config=None):
+    """
+    Enhanced execution function using the new robust engine.
+    Falls back to legacy for dry runs or if no config is provided.
+    """
+    if is_dry_run:
+        # Use legacy function for dry runs
+        return await execute_cycle_legacy(exchange, cycle, initial_amount, is_dry_run)
+
+    # If no config provided, create a default one
+    if not strategy_config:
+        strategy_config = {
+            'name': 'default',
+            'exchange': exchange.id,
+            'min_profit_bps': 10,
+            'max_slippage_bps': 20,
+            'capital_allocation': {
+                'mode': 'fixed_amount',
+                'amount': initial_amount
+            },
+            'risk_controls': {
+                'max_open_cycles': 1,
+                'stop_after_consecutive_losses': 5
+            },
+            'order': {
+                'type': 'market',
+                'allow_partial_fills': True,
+                'max_retries': 3,
+                'retry_delay_ms': 1000
+            },
+            'panic_sell': {
+                'enabled': True,
+                'base_currencies': ['USDC', 'USD', 'USDT'],
+                'max_slippage_bps': 100
+            },
+            'logging': {
+                'level': 'INFO'
+            }
+        }
+
+    # Configure logging
+    log_level = strategy_config.get('logging', {}).get('level', 'INFO')
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+    # Use the new engine
+    engine = StrategyExecutionEngine(exchange, strategy_config)
+
+    # Check for and recover any active cycles first
+    await engine.recover_active_cycles()
+
+    # Execute the new cycle
+    cycle_info = await engine.execute_cycle(cycle, initial_amount)
+
+    # Log results
+    if cycle_info.state == CycleState.COMPLETED:
+        print(f"\n--- CYCLE COMPLETED SUCCESSFULLY ---")
+        print(f"Initial Amount: {cycle_info.initial_amount:.8f} {cycle_info.cycle[0]}")
+        print(f"Final Amount: {cycle_info.current_amount:.8f} {cycle_info.current_currency}")
+        print(f"Profit/Loss: {cycle_info.profit_loss:.8f}")
+        print(f"Execution Time: {cycle_info.end_time - cycle_info.start_time:.2f} seconds")
+    else:
+        print(f"\n--- CYCLE FAILED ---")
+        print(f"Error: {cycle_info.error_message}")
+        print(f"Final State: {cycle_info.state.value}")
+        print(f"Current Holdings: {cycle_info.current_amount:.8f} {cycle_info.current_currency}")
+
+        if cycle_info.metadata.get('panic_sell_executed'):
+            print(f"Panic Sell Executed: {cycle_info.metadata['panic_sell_amount']:.8f} {cycle_info.metadata['panic_sell_currency']}")
+
+    return cycle_info
+
+
+async def execute_strategy(exchange, strategy_path: str, cycles: List[List[str]], amounts: List[float]):
+    """
+    Execute multiple cycles using a specific strategy configuration.
+
+    Args:
+        exchange: The exchange connection
+        strategy_path: Path to the strategy YAML file
+        cycles: List of cycles to execute
+        amounts: List of amounts for each cycle
+    """
+    # Load strategy configuration
+    config_manager = ConfigurationManager()
+    strategy_config = config_manager.load_strategy(strategy_path)
+
+    print(f"\nExecuting strategy: {strategy_config['name']}")
+    print(f"Exchange: {strategy_config['exchange']}")
+    print(f"Min Profit: {strategy_config['min_profit_bps']} bps")
+    print(f"Max Slippage: {strategy_config['max_slippage_bps']} bps")
+
+    # Create engine
+    engine = StrategyExecutionEngine(exchange, strategy_config)
+
+    # Recover any active cycles
+    await engine.recover_active_cycles()
+
+    # Execute each cycle
+    results = []
+    for cycle, amount in zip(cycles, amounts):
+        print(f"\nExecuting cycle: {' -> '.join(cycle)} -> {cycle[0]}")
+        cycle_info = await engine.execute_cycle(cycle, amount)
+        results.append(cycle_info)
+
+        # Check if we should stop due to consecutive losses
+        if engine.consecutive_losses >= engine.max_consecutive_losses:
+            print(f"\nStopping execution: {engine.consecutive_losses} consecutive losses")
+            break
+
+    # Summary
+    completed = [r for r in results if r.state == CycleState.COMPLETED]
+    failed = [r for r in results if r.state == CycleState.FAILED]
+    total_profit = sum(r.profit_loss or 0 for r in completed)
+
+    print(f"\n--- STRATEGY EXECUTION SUMMARY ---")
+    print(f"Total Cycles: {len(results)}")
+    print(f"Completed: {len(completed)}")
+    print(f"Failed: {len(failed)}")
+    print(f"Total Profit/Loss: {total_profit:.8f}")
+
+    return results
