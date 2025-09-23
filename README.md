@@ -1,114 +1,243 @@
-**Project Canvas: Triangular Arbitrage Bot**
-============================================
+# Triangular Arbitrage Trading System
 
-### **1\. Problem**
+A robust, configuration-driven cryptocurrency arbitrage trading system that automatically detects and executes profitable triangular arbitrage opportunities across cryptocurrency exchanges.
 
--   Finding profitable arbitrage opportunities in cryptocurrency markets is **computationally intensive** and time-consuming.
 
--   Executing trades manually is too slow to capitalize on fleeting opportunities.
+Finding and executing profitable triangular arbitrage opportunities in volatile cryptocurrency markets presents several challenges:
 
--   Automated trading is risky and prone to errors from **insufficient funds**, or failing to meet exchange-specific rules like **minimum order size** and **minimum order value**.
+- **Speed Requirements**: Arbitrage windows close rapidly, requiring automated execution
+- **Risk Management**: Manual trading carries high risks of execution errors and capital loss
+- **Technical Complexity**: Multi-leg transactions require sophisticated order management and failure recovery
+- **Market Constraints**: Each exchange has unique rules for minimum order sizes, available trading pairs, and API limitations
 
-### **2\. Solution**
+## Solution
 
-A command-line Python application that:
+This system provides a production-ready, fault-tolerant trading engine that:
 
--   **Scans** for profitable, multi-leg arbitrage opportunities on a given exchange.
+- **Automates Discovery**: Continuously scans for profitable arbitrage cycles using efficient graph algorithms
+- **Manages Risk**: Implements comprehensive risk controls, position limits, and automatic loss prevention
+- **Ensures Reliability**: Features robust state management, automatic recovery, and panic-sell mechanisms
+- **Scales Operations**: Supports multiple concurrent strategies with configurable parameters
 
--   Provides an **"actionable" mode** (`--actionable`) to find trades that can be executed immediately with the user's available funds.
+## Unique Value Proposition
 
--   Includes a crucial **"dry run" mode** (`--dry-run`) that simulates the entire trade execution process without using real funds, ensuring complete safety during testing.
+Unlike simple arbitrage scanners, this system offers:
 
--   Includes a comprehensive **wallet management** feature (`--wallet`) to display balances and public deposit addresses.
+- **Configuration-Driven Architecture**: YAML-based strategy files enable rapid deployment of different trading approaches without code changes
+- **Fault Tolerance**: Persistent state storage and automatic recovery ensure continuity after system interruptions
+- **Advanced Risk Controls**: Multi-layered protection including consecutive loss limits, position sizing, and emergency liquidation
+- **Production Ready**: Comprehensive logging, monitoring, and debugging tools for reliable operation
 
--   Prompts for **interactive trade execution** with robust pre-flight checks to prevent common transaction failures.
+## Installation
 
-### **3\. Key Metrics**
+### Prerequisites
 
--   Number of profitable opportunities identified.
+Ensure you have Python 3.8+ installed, then install dependencies:
 
--   Number of trades successfully executed.
+```bash
+pip install -r requirements.txt
+```
 
--   Net profit generated over time.
+### Setup
 
--   Frequency of successful runs without execution errors.
+1. **Configure API Access**: Create a `.env` file in the project root:
 
-### **4\. Unique Value Proposition**
+```env
+EXCHANGE_API_KEY=your_exchange_api_key
+EXCHANGE_API_SECRET=your_exchange_secret_key
+```
 
-This tool doesn't just find theoretical opportunities; it provides **actionable, real-time trading suggestions** tailored to your wallet. The built-in pre-trade validation, interactive confirmation, and especially the `--dry-run` simulation provide a crucial **safety layer**, making it a more intelligent and reliable tool than a simple scanner.
+2. **Choose Strategy Configuration**: Select from pre-configured strategies in `configs/strategies/` or create your own based on the examples.
 
-### **5\. Unfair Advantage**
+## Usage
 
-The combination of an efficient cycle detection algorithm (`networkx.find_negative_cycle`) with user-specific, actionable intelligence (`--actionable` mode) allows the bot to quickly filter out noise and present only the most relevant trading opportunities.
+### Quick Start
 
-### **6\. Channels**
+Execute a strategy with safety features enabled:
 
--   **Direct Use**: As a personal trading and market analysis tool.
+```bash
+# Test strategy safely (no real trades)
+python run_strategy.py --strategy configs/strategies/strategy_1.yaml --dry-run
 
--   **Open Source**: Hosted on GitHub (`Drakkar-Software/Triangular-Arbitrage`) for community collaboration and use.
+# Execute live strategy with automatic recovery
+python run_strategy.py --strategy configs/strategies/strategy_1.yaml --recover
 
-### **7\. Target Users**
+# Run multiple cycles with monitoring
+python run_strategy.py --strategy configs/strategies/strategy_robust_example.yaml --cycles 5 --log-level INFO
+```
 
--   Algorithmic traders looking for a reliable arbitrage detection engine.
+### Configuration
 
--   Manual crypto traders who want to automate the discovery phase of their strategy.
+Strategy configurations are stored in YAML files under `configs/strategies/`. Key parameters include:
 
--   Python developers interested in cryptocurrency trading and API integration.
+- **Capital Allocation**: Control position sizing with fixed amounts or portfolio fractions
+- **Risk Controls**: Set maximum open positions, consecutive loss limits, and stop conditions
+- **Order Management**: Configure order types, retry logic, and partial fill handling
+- **Recovery Settings**: Enable panic-sell mechanisms and emergency liquidation paths
 
-### **8\. Usage**
+Example minimal configuration:
 
-**Prerequisites:**
+```yaml
+name: my_strategy
+exchange: binance
+trading_pairs_file: data/cycles/binance_cycles.csv
+min_profit_bps: 10
+max_slippage_bps: 20
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.5
+```
 
-1.  Ensure all dependencies are installed: `pip install -r requirements.txt`
+### Monitoring
 
-2.  Create a `.env` file in the root directory with your exchange API keys:
+Monitor active trading cycles and system status:
 
-    ```
-    EXCHANGE_API_KEY=your_api_key_here
-    EXCHANGE_API_SECRET=your_api_secret_here
+```bash
+# View currently active cycles
+python monitor_cycles.py --active
 
-    ```
+# Review trading history
+python monitor_cycles.py --history 20
 
-**Commands:**
+# Examine specific cycle details
+python monitor_cycles.py --details cycle_id_here
 
--   **Check Wallet Balance:**
+# Clean up old records
+python monitor_cycles.py --cleanup 7
+```
 
-    ```
-    python3 main.py --wallet
+### Safe Testing
 
-    ```
+**Always test strategies before live trading:**
 
--   **Safe Testing (Dry Run):** Simulate the entire trade execution logic without using real money. This is the recommended way to test.
+```bash
+# Comprehensive dry run with full simulation
+python run_strategy.py --strategy configs/strategies/strategy_1.yaml --dry-run --log-level DEBUG
 
-    -   Simulate a general opportunity scan:
+# Test recovery mechanisms
+python run_strategy.py --strategy configs/strategies/strategy_1.yaml --dry-run --recover
 
-        ```
-        python3 main.py --dry-run
+# Validate configuration without execution
+python run_strategy.py --strategy configs/strategies/new_strategy.yaml --dry-run --cycles 1
+```
 
-        ```
+## Key Features
 
-    -   Simulate an actionable scan based on your wallet:
+### Robust State Management
+- Persistent SQLite database tracking all cycle states
+- Automatic recovery after system restarts or crashes
+- Complete audit trail of all trades and decisions
 
-        ```
-        python3 main.py --actionable --dry-run
+### Advanced Risk Controls
+- Maximum concurrent cycle limits
+- Consecutive loss protection with automatic shutdown
+- Pre-trade validation ensuring sufficient funds and valid markets
+- Configurable position sizing and capital allocation
 
-        ```
+### Intelligent Failure Recovery
+- Panic-sell mechanism converting positions to stable currencies
+- Multi-hop routing for emergency liquidation
+- Partial fill handling with configurable behavior
+- Exponential backoff retry logic for transient failures
 
--   **Live Trading:** Scan for and execute real trades. Only use this after you are confident with the dry run results.
+### Configuration-Driven Operation
+- YAML-based strategy files for easy modification
+- No hardcoded parameters requiring code changes
+- Support for multiple concurrent strategies
+- Hot-reloading of configuration changes
 
-    ```
-    python3 main.py --actionable
+## Command Reference
 
-    ```
+### run_strategy.py
+Execute trading strategies with full lifecycle management.
 
-### **9\. Cost Structure**
+**Arguments:**
+- `--strategy PATH`: Path to YAML strategy configuration (required)
+- `--recover`: Attempt to recover and complete any active cycles
+- `--cycles N`: Number of cycles to execute (default: 1)
+- `--dry-run`: Simulate execution without real trades
+- `--log-level LEVEL`: Set logging verbosity (DEBUG, INFO, WARNING, ERROR)
 
--   **Trading Fees**: Standard exchange fees are incurred on every executed trade.
+**Examples:**
+```bash
+python run_strategy.py --strategy configs/strategies/strategy_1.yaml --recover --log-level INFO
+python run_strategy.py --strategy configs/strategies/test.yaml --dry-run --cycles 3
+```
 
--   **Development Time**: The primary investment is the time spent building, testing, and refining the script's logic.
+### monitor_cycles.py
+Monitor and manage trading cycle states.
 
-### **10\. Revenue Streams**
+**Arguments:**
+- `--active`: Display all currently active cycles
+- `--history N`: Show last N completed cycles (default: 20)
+- `--details ID`: Show detailed information for specific cycle
+- `--cleanup N`: Remove cycle records older than N days (default: 7)
 
--   Currently a personal tool with no direct revenue model.
+**Examples:**
+```bash
+python monitor_cycles.py --active
+python monitor_cycles.py --history 50
+python monitor_cycles.py --cleanup 30
+```
 
--   Potential future monetization could involve offering it as a hosted service or developing more advanced, proprietary features.
+## Architecture
+
+The system follows a modular architecture with clear separation of concerns:
+
+```
+StrategyExecutionEngine (Orchestrator)
+├── StateManager (Persistent Storage)
+├── ConfigurationManager (YAML Processing)
+├── OrderManager (Trade Execution)
+└── FailureRecoveryManager (Error Handling)
+```
+
+Each component is independently testable and can be configured through the strategy files.
+
+## Risk Management
+
+The system implements multiple layers of risk protection:
+
+1. **Pre-Trade Validation**: Verifies sufficient balances, valid markets, and minimum order requirements
+2. **Position Limits**: Enforces maximum position sizes and concurrent cycle limits
+3. **Loss Protection**: Automatic shutdown after configurable consecutive losses
+4. **Emergency Procedures**: Panic-sell mechanism for immediate position liquidation
+5. **State Persistence**: Maintains complete trade history for audit and recovery
+
+## Troubleshooting
+
+### Common Issues
+
+**"Risk controls violated"**: Check consecutive loss count and active cycle limits in your strategy configuration.
+
+**"Cycle validation failed"**: Verify that your account has sufficient balance and that all trading pairs are available on the exchange.
+
+**"Strategy file not found"**: Ensure the path to your YAML configuration file is correct and the file exists.
+
+### Debug Mode
+
+Enable detailed logging for troubleshooting:
+
+```bash
+python run_strategy.py --strategy config.yaml --log-level DEBUG --dry-run
+```
+
+## Contributing
+
+This project follows standard development practices:
+
+1. All changes should be tested in dry-run mode first
+2. Configuration changes are preferred over code modifications
+3. Maintain backward compatibility with existing strategy files
+4. Add comprehensive logging for new features
+
+## License
+
+[Add your license information here]
+
+## Support
+
+For questions or issues:
+1. Check the execution logs and monitor active cycles
+2. Review the detailed documentation in `EXECUTION_ENGINE_DOCS.md`
+3. Test problematic configurations in dry-run mode with DEBUG logging
