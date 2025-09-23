@@ -2,6 +2,7 @@
 
 A robust, configuration-driven cryptocurrency arbitrage trading system that automatically detects and executes profitable triangular arbitrage opportunities across cryptocurrency exchanges.
 
+## Problem
 
 Finding and executing profitable triangular arbitrage opportunities in volatile cryptocurrency markets presents several challenges:
 
