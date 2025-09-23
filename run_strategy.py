@@ -22,6 +22,7 @@ from triangular_arbitrage.execution_engine import (
     StateManager,
     CycleState
 )
+from coinbase_adapter import CoinbaseAdvancedAdapter
 
 
 def load_cycles_from_csv(csv_path: str):
@@ -103,19 +104,37 @@ async def main():
     api_key = os.getenv("EXCHANGE_API_KEY")
     api_secret = os.getenv("EXCHANGE_API_SECRET")
 
-    if not api_key or not api_secret:
+    if not args.dry_run and (not api_key or not api_secret):
         logger.error("EXCHANGE_API_KEY or EXCHANGE_API_SECRET not found in .env file")
         return 1
 
-    exchange_class = getattr(ccxt, exchange_name)
-    exchange = exchange_class({
-        'apiKey': api_key,
-        'secret': api_secret,
-        'enableRateLimit': True,
-        'options': {
-            'createMarketBuyOrderRequiresPrice': False
+    # Use Coinbase Advanced Trading API for coinbase exchange
+    if exchange_name == 'coinbase':
+        if not api_key or not api_secret:
+            logger.error("Coinbase requires API credentials")
+            return 1
+        exchange = CoinbaseAdvancedAdapter(api_key, api_secret, sandbox=args.dry_run)
+    else:
+        exchange_class = getattr(ccxt, exchange_name)
+
+        # Configure exchange with proper credentials
+        exchange_config = {
+            'enableRateLimit': True,
+            'options': {
+                'createMarketBuyOrderRequiresPrice': False
+            }
         }
-    })
+
+        # Add credentials if not in dry-run mode or if required for Coinbase
+        if not args.dry_run or exchange_name in ['coinbasepro']:
+            if api_key and api_secret:
+                exchange_config['apiKey'] = api_key
+                exchange_config['secret'] = api_secret
+                # For Coinbase APIs, use sandbox for dry-runs
+                if exchange_name == 'coinbasepro' and args.dry_run:
+                    exchange_config['sandbox'] = True
+
+        exchange = exchange_class(exchange_config)
 
     try:
         # Load markets
@@ -143,25 +162,42 @@ async def main():
             logger.error("No cycles found in CSV file")
             return 1
 
-        # Get account balance
-        balances = await exchange.fetch_balance()
+        # Get account balance (skip for dry-runs or use mock data for problematic exchanges)
+        if args.dry_run:
+            # Mock balances for dry-run testing
+            balances = {'free': {'BTC': 1.0, 'ETH': 10.0, 'USDT': 10000.0, 'USDC': 10000.0, 'SOL': 100.0, 'ADA': 1000.0, 'DOT': 100.0, 'AVAX': 50.0, 'LINK': 100.0, 'LTC': 100.0, 'XRP': 1000.0, 'TRX': 10000.0, 'DOGE': 10000.0}}
+            logger.info("Using mock balances for dry-run")
+        else:
+            balances = await exchange.fetch_balance()
 
-        # Execute cycles
+        # 🚀 LIGHTNING-FAST ARBITRAGE HUNTING 🚀
+        # Execute profitable trades IMMEDIATELY when found (no delays!)
+        from triangular_arbitrage.trade_executor import calculate_arbitrage_profit, execute_cycle_legacy
+        min_profit_bps = strategy_config.get('min_profit_bps', 7)
+        max_executions = args.cycles
+
+        logger.info(f"⚡ LIGHTNING ARBITRAGE MODE: Scanning {len(cycles)} cycles")
+        logger.info(f"🎯 Will execute ALL profitable opportunities immediately (max {max_executions})")
+        logger.info(f"💰 Minimum profit threshold: {min_profit_bps} basis points")
+
         executed = 0
-        max_cycles = min(args.cycles, len(cycles))
+        scanned_count = 0
 
-        for i in range(max_cycles):
-            cycle = cycles[i % len(cycles)]
+        for cycle in cycles:
+            # Stop if we've executed enough trades
+            if executed >= max_executions:
+                logger.info(f"🛑 Maximum executions reached ({max_executions})")
+                break
 
-            # Determine starting amount based on capital allocation
-            capital_config = strategy_config['capital_allocation']
+            scanned_count += 1
             start_currency = cycle[0]
             available = balances.get('free', {}).get(start_currency, 0)
 
             if available <= 0:
-                logger.warning(f"No {start_currency} available, skipping cycle")
                 continue
 
+            # Calculate amount for this cycle
+            capital_config = strategy_config['capital_allocation']
             if capital_config['mode'] == 'fixed_fraction':
                 amount = available * capital_config['fraction']
             elif capital_config['mode'] == 'fixed_amount':
@@ -169,42 +205,54 @@ async def main():
             else:
                 amount = available
 
-            logger.info(
-                f"Executing cycle {i+1}/{max_cycles}: "
-                f"{' -> '.join(cycle)} -> {cycle[0]}"
-            )
-            logger.info(f"Amount: {amount:.8f} {start_currency}")
+            # Calculate profit for this cycle
+            try:
+                final_amount, profit_bps, is_profitable = await calculate_arbitrage_profit(
+                    exchange, cycle, amount, min_profit_bps
+                )
 
-            if args.dry_run:
-                logger.info("DRY RUN - Simulating execution")
-                # Use the legacy function for dry runs
-                from triangular_arbitrage.trade_executor import execute_cycle_legacy
-                await execute_cycle_legacy(exchange, cycle, amount, is_dry_run=True)
-            else:
-                # Execute with the new engine
-                cycle_info = await engine.execute_cycle(cycle, amount)
+                cycle_name = ' -> '.join(cycle + [cycle[0]])
+                profit_status = f"📊 [{scanned_count:3d}/{len(cycles)}] {cycle_name}: {profit_bps:+6.1f} bps"
 
-                if cycle_info.state == CycleState.COMPLETED:
-                    logger.info(
-                        f"Cycle completed. P/L: {cycle_info.profit_loss:.8f}"
-                    )
+                # 🔥 EXECUTE IMMEDIATELY IF PROFITABLE 🔥
+                if is_profitable:
+                    executed += 1
+                    logger.info(f"{profit_status} 🔥 PROFITABLE! EXECUTING NOW!")
+                    logger.info(f"⚡ Execution #{executed}: {amount:.8f} {start_currency}")
+
+                    if args.dry_run:
+                        logger.info("🧪 DRY RUN - Simulating execution")
+                        await execute_cycle_legacy(exchange, cycle, amount, is_dry_run=True, min_profit_bps=min_profit_bps)
+                    else:
+                        # Execute with the new engine
+                        cycle_info = await engine.execute_cycle(cycle, amount)
+
+                        if cycle_info.state == CycleState.COMPLETED:
+                            logger.info(f"✅ Trade completed. P/L: {cycle_info.profit_loss:.8f}")
+                        else:
+                            logger.error(f"❌ Trade failed: {cycle_info.error_message}")
+
+                        # Check for consecutive losses
+                        if engine.consecutive_losses >= engine.max_consecutive_losses:
+                            logger.warning(f"🛑 Stopping: {engine.consecutive_losses} consecutive losses")
+                            break
+
+                    logger.info(f"💎 Profit locked in! Moving to next opportunity...\n")
+
                 else:
-                    logger.error(
-                        f"Cycle failed: {cycle_info.error_message}"
-                    )
+                    logger.info(f"{profit_status}")  # Show unprofitable result
 
-                # Check for consecutive losses
-                if engine.consecutive_losses >= engine.max_consecutive_losses:
-                    logger.warning(
-                        f"Stopping: {engine.consecutive_losses} consecutive losses"
-                    )
-                    break
+                # Show progress every 25 cycles
+                if scanned_count % 25 == 0:
+                    logger.info(f"📊 Progress: {scanned_count}/{len(cycles)} scanned, {executed} profitable executed")
 
-            executed += 1
+            except Exception as e:
+                logger.warning(f"Failed to analyze cycle {cycle}: {e}")
 
-            # Brief pause between cycles
-            if i < max_cycles - 1:
-                await asyncio.sleep(2)
+        # Final summary
+        logger.info(f"\n🎯 ARBITRAGE HUNT COMPLETE!")
+        logger.info(f"📊 Scanned: {scanned_count}/{len(cycles)} cycles")
+        logger.info(f"💰 Executed: {executed} profitable trades")
 
         logger.info(f"Executed {executed} cycles")
 
