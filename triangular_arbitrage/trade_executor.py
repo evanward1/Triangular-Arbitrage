@@ -12,6 +12,74 @@ from .execution_engine import (
 
 logger = logging.getLogger(__name__)
 
+async def calculate_arbitrage_profit(exchange, cycle, initial_amount, min_profit_bps=0):
+    """
+    Calculate the potential profit from a triangular arbitrage cycle.
+    Returns (final_amount, profit_bps, is_profitable)
+    """
+    try:
+        from_currency = cycle[0]
+        amount = initial_amount
+        trade_path = cycle + [cycle[0]]
+        markets = await exchange.load_markets()
+
+        for i in range(len(trade_path) - 1):
+            to_currency = trade_path[i+1]
+
+            # Find the correct market and order side
+            market_symbol_forward = f"{to_currency}/{from_currency}"
+            market_symbol_backward = f"{from_currency}/{to_currency}"
+
+            market = None
+            order_side = None
+
+            if market_symbol_forward in markets:
+                market = markets[market_symbol_forward]
+                order_side = 'buy'
+                market_symbol = market_symbol_forward
+            elif market_symbol_backward in markets:
+                market = markets[market_symbol_backward]
+                order_side = 'sell'
+                market_symbol = market_symbol_backward
+            else:
+                logger.warning(f"No market found for {from_currency} -> {to_currency}")
+                return initial_amount, -10000, False
+
+            # Get current market price
+            try:
+                ticker = await exchange.fetch_ticker(market_symbol)
+                price = ticker['last']
+
+                if order_side == 'buy':
+                    # Buying to_currency with from_currency
+                    # Account for fees (assume 0.1% fee)
+                    amount = (amount / price) * 0.999
+                else:
+                    # Selling from_currency for to_currency
+                    # Account for fees (assume 0.1% fee)
+                    amount = (amount * price) * 0.999
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch ticker for {market_symbol}: {e}")
+                return initial_amount, -10000, False
+
+            from_currency = to_currency
+
+        # Calculate profit
+        final_amount = amount
+        profit = final_amount - initial_amount
+        profit_bps = (profit / initial_amount) * 10000  # basis points
+
+        is_profitable = profit_bps >= min_profit_bps
+
+        logger.info(f"Arbitrage calculation: {initial_amount:.6f} -> {final_amount:.6f} ({profit_bps:.1f} bps)")
+
+        return final_amount, profit_bps, is_profitable
+
+    except Exception as e:
+        logger.error(f"Error calculating arbitrage profit: {e}")
+        return initial_amount, -10000, False
+
 async def pre_trade_check(exchange, cycle, initial_amount):
     """
     Simulates the trade cycle to check if each step meets the minimum
@@ -75,12 +143,30 @@ async def pre_trade_check(exchange, cycle, initial_amount):
     print("  -> Validation successful. All trade steps meet minimum requirements.")
     return True
 
-async def execute_cycle_legacy(exchange, cycle, initial_amount, is_dry_run=False):
+async def execute_cycle_legacy(exchange, cycle, initial_amount, is_dry_run=False, min_profit_bps=7):
     """
     Legacy execution function for backward compatibility.
     Used only for dry runs now. Live trades use the new engine.
     """
-    # --- NEW: Run the pre-trade validation first ---
+    # First check if the arbitrage opportunity is profitable
+    final_amount, profit_bps, is_profitable = await calculate_arbitrage_profit(
+        exchange, cycle, initial_amount, min_profit_bps
+    )
+
+    print(f"\n--- ARBITRAGE OPPORTUNITY ANALYSIS ---")
+    print(f"Cycle: {' -> '.join(cycle + [cycle[0]])}")
+    print(f"Expected result: {initial_amount:.6f} -> {final_amount:.6f}")
+    print(f"Profit: {profit_bps:.1f} basis points")
+    print(f"Minimum required: {min_profit_bps} basis points")
+
+    if not is_profitable:
+        print(f"\n--- OPPORTUNITY REJECTED: Not profitable enough ---")
+        print(f"This cycle would lose money or not meet minimum profit threshold.")
+        return
+
+    print(f"\n--- PROFITABLE OPPORTUNITY FOUND ---")
+
+    # Run pre-trade validation for order sizes
     is_valid = await pre_trade_check(exchange, cycle, initial_amount)
     if not is_valid:
         print("\n--- TRADE CYCLE HALTED DUE TO VALIDATION FAILURE ---")

@@ -1,6 +1,6 @@
 name: strategy_1
-exchange: binance
-trading_pairs_file: data/cycles/binance_cycles_1.csv
+exchange: coinbase
+trading_pairs_file: data/cycles/coinbase_cycles_priority.csv
 min_profit_bps: 7
 max_slippage_bps: 9
 max_leg_latency_ms: 264

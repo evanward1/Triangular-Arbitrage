@@ -1,10 +1,8 @@
 # Robust Strategy Execution Engine Documentation
 
-> **⚡ LIGHTNING ARBITRAGE UPDATE**: This documentation covers the legacy execution engine. The system now features **Lightning Arbitrage Mode** with immediate execution of profitable opportunities. See `README.md` for the latest lightning arbitrage capabilities including real-time scanning of 1,920+ cycles and immediate execution.
-
 ## Overview
 
-The Strategy Execution Engine provides a fault-tolerant, configuration-driven system for executing cryptocurrency arbitrage cycles. This engine works alongside the new Lightning Arbitrage Mode for comprehensive trading capabilities.
+The new Strategy Execution Engine provides a fault-tolerant, configuration-driven system for executing cryptocurrency arbitrage cycles. It replaces the brittle logic in the original `trade_executor.py` with a robust, stateful engine that can recover from failures and protect against losses.
 
 ## Key Features
 
