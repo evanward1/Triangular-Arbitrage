@@ -1,0 +1,67 @@
+name: strategy_optimized_monitoring
+exchange: binance
+trading_pairs_file: data/cycles/binance_cycles_1.csv
+min_profit_bps: 10
+max_slippage_bps: 20
+
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.5
+
+risk_controls:
+  max_open_cycles: 3
+  stop_after_consecutive_losses: 5
+
+fees:
+  taker_bps: 10
+  maker_bps: 5
+
+order:
+  type: market
+  allow_partial_fills: true
+  min_partial_fill_percentage: 0.95
+  max_retries: 3
+  retry_delay_ms: 1000
+
+  # New monitoring configuration with exponential backoff
+  monitoring:
+    # Initial delay between order status checks (milliseconds)
+    initial_delay_ms: 100
+
+    # Maximum delay between checks (milliseconds)
+    max_delay_ms: 5000
+
+    # Exponential backoff multiplier
+    backoff_multiplier: 2.0
+
+    # Jitter factor (0.0 to 1.0) to randomize delays
+    jitter_factor: 0.3
+
+    # Time threshold for rapid checking of new orders (milliseconds)
+    rapid_check_threshold_ms: 2000
+
+    # Interval for rapid checks during initial phase (milliseconds)
+    rapid_check_interval_ms: 50
+
+    # Rate limit buffer (0.0 to 1.0) - use this fraction of rate limit
+    rate_limit_buffer: 0.8
+
+    # Minimum interval between API requests (milliseconds)
+    min_request_interval_ms: 50
+
+    # Cache TTL for order status (milliseconds)
+    cache_ttl_ms: 500
+
+panic_sell:
+  enabled: true
+  base_currencies: ['USDC', 'USD', 'USDT']
+  max_slippage_bps: 100
+
+simulation:
+  enable: false
+  book_depth_levels: 5
+  latency_ms: 150
+
+logging:
+  level: INFO
+  trade_csv: logs/trades_optimized.csv

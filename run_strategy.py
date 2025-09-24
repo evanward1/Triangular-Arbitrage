@@ -125,6 +125,9 @@ async def main():
         # Create execution engine
         engine = StrategyExecutionEngine(exchange, strategy_config)
 
+        # Initialize async components
+        await engine.initialize()
+
         # Handle recovery if requested
         if args.recover:
             logger.info("Recovering active cycles...")

@@ -1,0 +1,102 @@
+name: strategy_enhanced_panic
+exchange: binance
+trading_pairs_file: data/cycles/binance_cycles_1.csv
+
+# Profit and slippage thresholds
+min_profit_bps: 15
+max_slippage_bps: 25
+max_leg_latency_ms: 300
+
+# Capital allocation
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.4
+
+# Risk controls
+risk_controls:
+  max_open_cycles: 2
+  stop_after_consecutive_losses: 3
+
+# Exchange fees
+fees:
+  taker_bps: 10
+  maker_bps: 5
+
+# Order configuration
+order:
+  type: market
+  allow_partial_fills: true
+  min_partial_fill_percentage: 0.90
+  max_retries: 3
+  retry_delay_ms: 1000
+
+  # Enhanced monitoring configuration
+  monitoring:
+    initial_delay_ms: 100
+    max_delay_ms: 5000
+    backoff_multiplier: 2.0
+    jitter_factor: 0.3
+    rapid_check_threshold_ms: 2000
+    rapid_check_interval_ms: 100
+    rate_limit_buffer: 0.75
+    min_request_interval_ms: 100
+    cache_ttl_ms: 1000
+
+# Enhanced panic sell configuration
+panic_sell:
+  enabled: true
+  use_enhanced_routing: true  # Enable dynamic multi-hop routing
+
+  # Target currencies (in order of preference)
+  base_currencies:
+    - USDT
+    - USDC
+    - BUSD
+    - USD
+
+  # Preferred intermediary currencies for multi-hop routes
+  preferred_intermediaries:
+    - BTC
+    - ETH
+    - BNB
+    - XRP
+
+  # Slippage and risk parameters
+  max_total_slippage_bps: 250      # Maximum total slippage across all hops
+  max_single_hop_slippage_bps: 120  # Maximum slippage for a single trade
+  max_hops: 4                       # Maximum number of trades to reach target
+
+  # Liquidity requirements
+  min_liquidity_usd: 5000           # Minimum liquidity for a market to be considered
+
+  # Path finding configuration
+  path_timeout_ms: 10000            # Timeout for finding paths
+  max_paths_to_evaluate: 15         # Number of alternative paths to consider
+
+  # Scoring weights (must sum to 1.0)
+  liquidity_weight: 0.35
+  slippage_weight: 0.45
+  hop_penalty_weight: 0.20
+
+  # Market condition thresholds
+  volatility_threshold_bps: 500     # Threshold for volatile market detection
+  extreme_spread_bps: 300           # Spread indicating extreme conditions
+
+  # Execution parameters
+  retry_attempts: 3                 # Number of path attempts
+  retry_delay_ms: 1000              # Delay between retry attempts
+  partial_fill_threshold: 0.90      # Minimum fill ratio to continue path
+
+  # Cache configuration
+  cache_ttl_ms: 15000               # How long to cache market data
+
+# Simulation settings (for testing)
+simulation:
+  enable: false
+  book_depth_levels: 10
+  latency_ms: 200
+
+# Logging configuration
+logging:
+  level: INFO
+  trade_csv: logs/trades_enhanced_panic.csv

@@ -2,3 +2,4 @@ ccxt
 networkx[default]
 OctoBot-Commons>=1.9, <1.10
 python-dotenv
+aiosqlite
