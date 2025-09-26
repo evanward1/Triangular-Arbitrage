@@ -21,12 +21,12 @@ def test_suppression_summary_with_events():
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
             duplicate_suppression_window=2.0,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         cycles = [
             ("BTC->ETH->USDT", "latency_exceeded", 5),
-            ("ETH->USDT->BTC", "slippage_exceeded", 3)
+            ("ETH->USDT->BTC", "slippage_exceeded", 3),
         ]
 
         for cycle_id, reason, dup_count in cycles:
@@ -44,18 +44,18 @@ def test_suppression_summary_with_events():
                     slippages_bps=[0, 0, 0],
                     threshold_violated={},
                     leg_details=[],
-                    metadata={}
+                    metadata={},
                 )
                 manager.logger.log_violation(violation, is_executed=False)
                 time.sleep(0.01)
 
         summary = manager.logger.get_suppression_summary(window_seconds=60)
 
-        assert summary['total_suppressed'] == 8
-        assert summary['unique_pairs'] == 2
-        assert summary['suppression_rate'] > 0
-        assert len(summary['top_pairs']) == 2
-        assert summary['top_pairs'][0]['cycle_id'] == "BTC->ETH->USDT"
+        assert summary["total_suppressed"] == 8
+        assert summary["unique_pairs"] == 2
+        assert summary["suppression_rate"] > 0
+        assert len(summary["top_pairs"]) == 2
+        assert summary["top_pairs"][0]["cycle_id"] == "BTC->ETH->USDT"
 
         print(f"  ✓ Total suppressed: {summary['total_suppressed']}")
         print(f"  ✓ Unique pairs: {summary['unique_pairs']}")
@@ -78,15 +78,15 @@ def test_suppression_summary_empty():
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
             duplicate_suppression_window=2.0,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         summary = manager.logger.get_suppression_summary(window_seconds=300)
 
-        assert summary['total_suppressed'] == 0
-        assert summary['unique_pairs'] == 0
-        assert summary['suppression_rate'] == 0.0
-        assert summary['top_pairs'] == []
+        assert summary["total_suppressed"] == 0
+        assert summary["unique_pairs"] == 0
+        assert summary["suppression_rate"] == 0.0
+        assert summary["top_pairs"] == []
 
         print(f"  ✓ Returns empty summary when no events")
 
@@ -106,17 +106,19 @@ def test_suppression_summary_window_filtering():
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
             duplicate_suppression_window=2.0,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         old_time = time.time() - 400
-        manager.logger._suppressed_history.append({
-            'cycle_id': 'OLD->CYCLE',
-            'stop_reason': 'latency_exceeded',
-            'first_seen': old_time,
-            'last_seen': old_time,
-            'duplicate_count': 10
-        })
+        manager.logger._suppressed_history.append(
+            {
+                "cycle_id": "OLD->CYCLE",
+                "stop_reason": "latency_exceeded",
+                "first_seen": old_time,
+                "last_seen": old_time,
+                "duplicate_count": 10,
+            }
+        )
 
         for i in range(3):
             violation = RiskControlViolation(
@@ -132,16 +134,16 @@ def test_suppression_summary_window_filtering():
                 slippages_bps=[0, 0],
                 threshold_violated={},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
             manager.logger.log_violation(violation, is_executed=False)
             time.sleep(0.01)
 
         summary = manager.logger.get_suppression_summary(window_seconds=300)
 
-        assert summary['total_suppressed'] == 2
-        assert summary['unique_pairs'] == 1
-        assert summary['top_pairs'][0]['cycle_id'] == "NEW->CYCLE"
+        assert summary["total_suppressed"] == 2
+        assert summary["unique_pairs"] == 1
+        assert summary["top_pairs"][0]["cycle_id"] == "NEW->CYCLE"
 
         print(f"  ✓ Excludes old events (> {summary['window_seconds']}s)")
         print(f"  ✓ Only counts recent events: {summary['total_suppressed']}")
@@ -150,16 +152,16 @@ def test_suppression_summary_window_filtering():
         shutil.rmtree(temp_dir)
 
 
-if __name__ == '__main__':
-    print("="*60)
+if __name__ == "__main__":
+    print("=" * 60)
     print("CLI SMOKE TEST: --suppression-summary")
-    print("="*60)
+    print("=" * 60)
 
     test_suppression_summary_with_events()
     test_suppression_summary_empty()
     test_suppression_summary_window_filtering()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("ALL CLI SMOKE TESTS PASSED ✓")
-    print("="*60)
+    print("=" * 60)
     print()

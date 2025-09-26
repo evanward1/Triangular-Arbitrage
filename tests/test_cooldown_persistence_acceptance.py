@@ -18,9 +18,9 @@ from triangular_arbitrage.risk_controls import RiskControlManager
 
 
 def test_cooldown_persistence_acceptance():
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("COOLDOWN PERSISTENCE ACCEPTANCE TEST")
-    print("="*60)
+    print("=" * 60)
 
     temp_dir = tempfile.mkdtemp()
     state_file = f"{temp_dir}/cooldowns_state.json"
@@ -31,7 +31,7 @@ def test_cooldown_persistence_acceptance():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=5,
-            log_dir=f"{temp_dir}/logs"
+            log_dir=f"{temp_dir}/logs",
         )
         print("   ✓ Manager created")
 
@@ -54,9 +54,11 @@ def test_cooldown_persistence_acceptance():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=5,
-            log_dir=f"{temp_dir}/logs"
+            log_dir=f"{temp_dir}/logs",
         )
-        assert not manager2.is_cycle_in_cooldown(cycle_path), "Cooldown should not exist yet"
+        assert not manager2.is_cycle_in_cooldown(
+            cycle_path
+        ), "Cooldown should not exist yet"
         print("   ✓ New manager created (cooldowns empty)")
 
         print("\n5. Loading cooldown state (--resume behavior)...")
@@ -65,7 +67,9 @@ def test_cooldown_persistence_acceptance():
         print(f"   ✓ Resumed with {restored} active cooldown(s)")
 
         print("\n6. Verifying cooldown is active...")
-        assert manager2.is_cycle_in_cooldown(cycle_path), "Cycle should be in cooldown after load"
+        assert manager2.is_cycle_in_cooldown(
+            cycle_path
+        ), "Cycle should be in cooldown after load"
         remaining = manager2.get_cycle_cooldown_remaining(cycle_path)
         print(f"   ✓ Cycle still in cooldown: {remaining:.1f}s remaining")
 
@@ -78,12 +82,14 @@ def test_cooldown_persistence_acceptance():
 
         print("\n8. Waiting for cooldown to expire...")
         time.sleep(5.2)
-        assert not manager2.is_cycle_in_cooldown(cycle_path), "Cooldown should have expired"
+        assert not manager2.is_cycle_in_cooldown(
+            cycle_path
+        ), "Cooldown should have expired"
         print("   ✓ Cooldown expired as expected")
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("ACCEPTANCE TEST PASSED ✓")
-        print("="*60)
+        print("=" * 60)
         print("\nVerified:")
         print("  ✓ Cooldowns are saved to JSON file atomically")
         print("  ✓ Cooldowns survive simulated restart (--resume)")
@@ -95,5 +101,5 @@ def test_cooldown_persistence_acceptance():
         shutil.rmtree(temp_dir)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     test_cooldown_persistence_acceptance()

@@ -18,9 +18,19 @@ def test_snapshot_cli():
 
     try:
         result = subprocess.run(
-            ['python', 'monitor_cycles.py', 'snapshot', '--out-dir', temp_dir, '--recent', '5', '--window', '60'],
+            [
+                "python",
+                "monitor_cycles.py",
+                "snapshot",
+                "--out-dir",
+                temp_dir,
+                "--recent",
+                "5",
+                "--window",
+                "60",
+            ],
             capture_output=True,
-            text=True
+            text=True,
         )
 
         assert result.returncode == 0
@@ -32,12 +42,12 @@ def test_snapshot_cli():
         assert len(json_files) == 1, f"Expected 1 JSON file, found {len(json_files)}"
         assert len(md_files) == 1, f"Expected 1 MD file, found {len(md_files)}"
 
-        with open(json_files[0], 'r') as f:
+        with open(json_files[0], "r") as f:
             data = json.load(f)
 
-        assert 'metadata' in data
-        assert 'config' in data
-        assert 'suppression_summary' in data
+        assert "metadata" in data
+        assert "config" in data
+        assert "suppression_summary" in data
 
         print(f"  ✓ Created JSON: {json_files[0].name}")
         print(f"  ✓ Created MD: {md_files[0].name}")
@@ -52,9 +62,17 @@ def test_health_cli():
     print("\nTesting health CLI...")
 
     result = subprocess.run(
-        ['python', 'monitor_cycles.py', 'health', '--window', '60', '--max-suppression-rate', '95'],
+        [
+            "python",
+            "monitor_cycles.py",
+            "health",
+            "--window",
+            "60",
+            "--max-suppression-rate",
+            "95",
+        ],
         capture_output=True,
-        text=True
+        text=True,
     )
 
     assert result.returncode == 0, f"Health check failed: {result.stdout}"
@@ -64,15 +82,15 @@ def test_health_cli():
     print(f"  ✓ Output: {result.stdout.strip()}")
 
 
-if __name__ == '__main__':
-    print("="*60)
+if __name__ == "__main__":
+    print("=" * 60)
     print("CLI SMOKE TEST: Snapshot & Health")
-    print("="*60)
+    print("=" * 60)
 
     test_snapshot_cli()
     test_health_cli()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("ALL CLI SMOKE TESTS PASSED ✓")
-    print("="*60)
+    print("=" * 60)
     print()

@@ -20,7 +20,7 @@ class TestDuplicateSuppression:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             cycle_id = "test-cycle-1"
@@ -39,7 +39,7 @@ class TestDuplicateSuppression:
                 slippages_bps=[0, 0, 0],
                 threshold_violated={"latency_ms": 150},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
 
             manager.logger.log_violation(violation, is_executed=False)
@@ -49,8 +49,8 @@ class TestDuplicateSuppression:
             manager.logger.log_violation(violation, is_executed=False)
 
             stats = manager.logger.get_suppression_stats()
-            assert stats['total_duplicates_suppressed'] == 1
-            assert stats['cache_size'] == 1
+            assert stats["total_duplicates_suppressed"] == 1
+            assert stats["cache_size"] == 1
 
         finally:
             shutil.rmtree(temp_dir)
@@ -65,7 +65,7 @@ class TestDuplicateSuppression:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             cycle_id = "test-cycle-1"
@@ -83,7 +83,7 @@ class TestDuplicateSuppression:
                 slippages_bps=[0, 0, 0],
                 threshold_violated={"latency_ms": 150},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
 
             violation2 = RiskControlViolation(
@@ -99,15 +99,15 @@ class TestDuplicateSuppression:
                 slippages_bps=[100, 50, 50],
                 threshold_violated={"slippage_bps": 100},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
 
             manager.logger.log_violation(violation1, is_executed=False)
             manager.logger.log_violation(violation2, is_executed=False)
 
             stats = manager.logger.get_suppression_stats()
-            assert stats['total_duplicates_suppressed'] == 0
-            assert stats['cache_size'] == 2
+            assert stats["total_duplicates_suppressed"] == 0
+            assert stats["cache_size"] == 2
 
         finally:
             shutil.rmtree(temp_dir)
@@ -122,7 +122,7 @@ class TestDuplicateSuppression:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             stop_reason = "latency_exceeded"
@@ -140,7 +140,7 @@ class TestDuplicateSuppression:
                 slippages_bps=[0, 0, 0],
                 threshold_violated={"latency_ms": 150},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
 
             violation2 = RiskControlViolation(
@@ -156,15 +156,15 @@ class TestDuplicateSuppression:
                 slippages_bps=[0, 0, 0],
                 threshold_violated={"latency_ms": 150},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
 
             manager.logger.log_violation(violation1, is_executed=False)
             manager.logger.log_violation(violation2, is_executed=False)
 
             stats = manager.logger.get_suppression_stats()
-            assert stats['total_duplicates_suppressed'] == 0
-            assert stats['cache_size'] == 2
+            assert stats["total_duplicates_suppressed"] == 0
+            assert stats["cache_size"] == 2
 
         finally:
             shutil.rmtree(temp_dir)
@@ -179,7 +179,7 @@ class TestDuplicateSuppression:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=0.3,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             cycle_id = "test-cycle-1"
@@ -199,7 +199,7 @@ class TestDuplicateSuppression:
                 slippages_bps=[0, 0, 0],
                 threshold_violated={"latency_ms": 150},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
 
             manager.logger.log_violation(violation1, is_executed=False)
@@ -220,14 +220,14 @@ class TestDuplicateSuppression:
                 slippages_bps=[0, 0, 0],
                 threshold_violated={"latency_ms": 150},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
 
             manager.logger.log_violation(violation2, is_executed=False)
 
             stats = manager.logger.get_suppression_stats()
-            assert stats['total_duplicates_suppressed'] == 0
-            assert stats['cache_size'] == 1
+            assert stats["total_duplicates_suppressed"] == 0
+            assert stats["cache_size"] == 1
 
         finally:
             shutil.rmtree(temp_dir)
@@ -242,7 +242,7 @@ class TestDuplicateSuppression:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             cycle_id = "test-cycle-1"
@@ -261,7 +261,7 @@ class TestDuplicateSuppression:
                 slippages_bps=[0, 0, 0],
                 threshold_violated={},
                 leg_details=[],
-                metadata={"profit_bps": 10}
+                metadata={"profit_bps": 10},
             )
 
             manager.logger.log_violation(violation, is_executed=True)
@@ -271,7 +271,7 @@ class TestDuplicateSuppression:
             manager.logger.log_violation(violation, is_executed=True)
 
             stats = manager.logger.get_suppression_stats()
-            assert stats['total_duplicates_suppressed'] == 0
+            assert stats["total_duplicates_suppressed"] == 0
 
         finally:
             shutil.rmtree(temp_dir)
@@ -286,11 +286,11 @@ class TestDuplicateSuppression:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=5.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             stats = manager.logger.get_suppression_stats()
-            assert stats['suppression_window_seconds'] == 5.0
+            assert stats["suppression_window_seconds"] == 5.0
 
         finally:
             shutil.rmtree(temp_dir)
@@ -307,7 +307,7 @@ class TestSuppressedHistory:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             cycle_id = "test-cycle-1"
@@ -327,7 +327,7 @@ class TestSuppressedHistory:
                 slippages_bps=[0, 0, 0],
                 threshold_violated={"latency_ms": 150},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
 
             manager.logger.log_violation(violation1, is_executed=False)
@@ -348,7 +348,7 @@ class TestSuppressedHistory:
                 slippages_bps=[0, 0, 0],
                 threshold_violated={"latency_ms": 150},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
 
             manager.logger.log_violation(violation2, is_executed=False)
@@ -356,11 +356,11 @@ class TestSuppressedHistory:
             suppressed = manager.logger.get_recent_suppressed(limit=10)
 
             assert len(suppressed) == 1
-            assert suppressed[0]['cycle_id'] == cycle_id
-            assert suppressed[0]['stop_reason'] == stop_reason
-            assert suppressed[0]['duplicate_count'] == 1
-            assert suppressed[0]['first_seen'] == ts1
-            assert suppressed[0]['last_seen'] == ts2
+            assert suppressed[0]["cycle_id"] == cycle_id
+            assert suppressed[0]["stop_reason"] == stop_reason
+            assert suppressed[0]["duplicate_count"] == 1
+            assert suppressed[0]["first_seen"] == ts1
+            assert suppressed[0]["last_seen"] == ts2
 
         finally:
             shutil.rmtree(temp_dir)
@@ -375,7 +375,7 @@ class TestSuppressedHistory:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             for i in range(15):
@@ -393,7 +393,7 @@ class TestSuppressedHistory:
                     slippages_bps=[0, 0, 0],
                     threshold_violated={"latency_ms": 150},
                     leg_details=[],
-                    metadata={}
+                    metadata={},
                 )
                 manager.logger.log_violation(violation1, is_executed=False)
 
@@ -412,7 +412,7 @@ class TestSuppressedHistory:
                     slippages_bps=[0, 0, 0],
                     threshold_violated={"latency_ms": 150},
                     leg_details=[],
-                    metadata={}
+                    metadata={},
                 )
                 manager.logger.log_violation(violation2, is_executed=False)
 
@@ -436,7 +436,7 @@ class TestSuppressedHistory:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             for i in range(3):
@@ -454,7 +454,7 @@ class TestSuppressedHistory:
                     slippages_bps=[0, 0, 0],
                     threshold_violated={"latency_ms": 150},
                     leg_details=[],
-                    metadata={}
+                    metadata={},
                 )
                 manager.logger.log_violation(violation1, is_executed=False)
 
@@ -473,7 +473,7 @@ class TestSuppressedHistory:
                     slippages_bps=[0, 0, 0],
                     threshold_violated={"latency_ms": 150},
                     leg_details=[],
-                    metadata={}
+                    metadata={},
                 )
                 manager.logger.log_violation(violation2, is_executed=False)
 
@@ -481,9 +481,9 @@ class TestSuppressedHistory:
 
             suppressed = manager.logger.get_recent_suppressed(limit=10)
 
-            assert suppressed[0]['cycle_id'] == "cycle-2"
-            assert suppressed[1]['cycle_id'] == "cycle-1"
-            assert suppressed[2]['cycle_id'] == "cycle-0"
+            assert suppressed[0]["cycle_id"] == "cycle-2"
+            assert suppressed[1]["cycle_id"] == "cycle-1"
+            assert suppressed[2]["cycle_id"] == "cycle-0"
 
         finally:
             shutil.rmtree(temp_dir)
@@ -500,13 +500,13 @@ class TestSuppressionSummary:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             cycles = [
                 ("BTC->ETH->USDT", "latency_exceeded", 5),
                 ("ETH->USDT->BTC", "slippage_exceeded", 3),
-                ("USDT->BTC->ETH", "latency_exceeded", 2)
+                ("USDT->BTC->ETH", "latency_exceeded", 2),
             ]
 
             for cycle_id, reason, dup_count in cycles:
@@ -524,19 +524,19 @@ class TestSuppressionSummary:
                         slippages_bps=[0, 0, 0],
                         threshold_violated={},
                         leg_details=[],
-                        metadata={}
+                        metadata={},
                     )
                     manager.logger.log_violation(violation, is_executed=False)
                     time.sleep(0.01)
 
             summary = manager.logger.get_suppression_summary(window_seconds=60)
 
-            assert summary['total_suppressed'] == 10
-            assert summary['unique_pairs'] == 3
-            assert summary['suppression_rate'] > 0
-            assert len(summary['top_pairs']) == 3
-            assert summary['top_pairs'][0]['cycle_id'] == "BTC->ETH->USDT"
-            assert summary['top_pairs'][0]['count'] == 5
+            assert summary["total_suppressed"] == 10
+            assert summary["unique_pairs"] == 3
+            assert summary["suppression_rate"] > 0
+            assert len(summary["top_pairs"]) == 3
+            assert summary["top_pairs"][0]["cycle_id"] == "BTC->ETH->USDT"
+            assert summary["top_pairs"][0]["count"] == 5
 
         finally:
             shutil.rmtree(temp_dir)
@@ -551,17 +551,19 @@ class TestSuppressionSummary:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             old_time = time.time() - 400
-            manager.logger._suppressed_history.append({
-                'cycle_id': 'OLD->CYCLE',
-                'stop_reason': 'latency_exceeded',
-                'first_seen': old_time,
-                'last_seen': old_time,
-                'duplicate_count': 10
-            })
+            manager.logger._suppressed_history.append(
+                {
+                    "cycle_id": "OLD->CYCLE",
+                    "stop_reason": "latency_exceeded",
+                    "first_seen": old_time,
+                    "last_seen": old_time,
+                    "duplicate_count": 10,
+                }
+            )
 
             for i in range(3):
                 violation = RiskControlViolation(
@@ -577,16 +579,16 @@ class TestSuppressionSummary:
                     slippages_bps=[0, 0],
                     threshold_violated={},
                     leg_details=[],
-                    metadata={}
+                    metadata={},
                 )
                 manager.logger.log_violation(violation, is_executed=False)
                 time.sleep(0.01)
 
             summary = manager.logger.get_suppression_summary(window_seconds=300)
 
-            assert summary['total_suppressed'] == 2
-            assert summary['unique_pairs'] == 1
-            assert summary['top_pairs'][0]['cycle_id'] == "NEW->CYCLE"
+            assert summary["total_suppressed"] == 2
+            assert summary["unique_pairs"] == 1
+            assert summary["top_pairs"][0]["cycle_id"] == "NEW->CYCLE"
 
         finally:
             shutil.rmtree(temp_dir)
@@ -601,15 +603,15 @@ class TestSuppressionSummary:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             summary = manager.logger.get_suppression_summary(window_seconds=300)
 
-            assert summary['total_suppressed'] == 0
-            assert summary['unique_pairs'] == 0
-            assert summary['suppression_rate'] == 0.0
-            assert summary['top_pairs'] == []
+            assert summary["total_suppressed"] == 0
+            assert summary["unique_pairs"] == 0
+            assert summary["suppression_rate"] == 0.0
+            assert summary["top_pairs"] == []
 
         finally:
             shutil.rmtree(temp_dir)
@@ -624,7 +626,7 @@ class TestSuppressionSummary:
                 max_slippage_bps=50,
                 slippage_cooldown_seconds=300,
                 duplicate_suppression_window=2.0,
-                log_dir=temp_dir
+                log_dir=temp_dir,
             )
 
             cycles = [
@@ -632,7 +634,7 @@ class TestSuppressionSummary:
                 ("CYCLE-B", 5),
                 ("CYCLE-C", 3),
                 ("CYCLE-D", 1),
-                ("CYCLE-E", 4)
+                ("CYCLE-E", 4),
             ]
 
             for cycle_id, dup_count in cycles:
@@ -650,25 +652,26 @@ class TestSuppressionSummary:
                         slippages_bps=[0],
                         threshold_violated={},
                         leg_details=[],
-                        metadata={}
+                        metadata={},
                     )
                     manager.logger.log_violation(violation, is_executed=False)
                     time.sleep(0.01)
 
             summary = manager.logger.get_suppression_summary(window_seconds=60)
 
-            assert len(summary['top_pairs']) == 3
-            assert summary['top_pairs'][0]['cycle_id'] == "CYCLE-B"
-            assert summary['top_pairs'][0]['count'] == 5
-            assert summary['top_pairs'][1]['cycle_id'] == "CYCLE-E"
-            assert summary['top_pairs'][1]['count'] == 4
-            assert summary['top_pairs'][2]['cycle_id'] == "CYCLE-C"
-            assert summary['top_pairs'][2]['count'] == 3
+            assert len(summary["top_pairs"]) == 3
+            assert summary["top_pairs"][0]["cycle_id"] == "CYCLE-B"
+            assert summary["top_pairs"][0]["count"] == 5
+            assert summary["top_pairs"][1]["cycle_id"] == "CYCLE-E"
+            assert summary["top_pairs"][1]["count"] == 4
+            assert summary["top_pairs"][2]["cycle_id"] == "CYCLE-C"
+            assert summary["top_pairs"][2]["count"] == 3
 
         finally:
             shutil.rmtree(temp_dir)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import pytest
-    pytest.main([__file__, '-v'])
+
+    pytest.main([__file__, "-v"])

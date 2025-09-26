@@ -87,28 +87,37 @@ def show_active_cycles():
         print("-" * 60)
 
 
-def show_history(limit=20):
-    """Display historical cycles"""
+def show_history(limit=20, mode_filter=None):
+    """Display historical cycles with optional mode filtering"""
     conn = sqlite3.connect('trade_state.db')
     cursor = conn.cursor()
 
-    cursor.execute('''
+    # Build query with optional mode filtering
+    query = '''
         SELECT id, strategy_name, state, start_time, end_time,
                initial_amount, current_amount, current_currency,
-               profit_loss, error_message
+               profit_loss, error_message, metadata
         FROM cycles
-        ORDER BY start_time DESC
-        LIMIT ?
-    ''', (limit,))
+    '''
+    params = []
 
+    if mode_filter:
+        query += " WHERE json_extract(metadata, '$.execution_mode') = ?"
+        params.append(mode_filter)
+
+    query += " ORDER BY start_time DESC LIMIT ?"
+    params.append(limit)
+
+    cursor.execute(query, params)
     rows = cursor.fetchall()
-    conn.close()
 
     if not rows:
-        print("No cycle history found.")
+        mode_text = f" ({mode_filter} mode)" if mode_filter else ""
+        print(f"No cycle history found{mode_text}.")
         return
 
-    print(f"\n=== CYCLE HISTORY (Last {limit}) ===\n")
+    mode_text = f" ({mode_filter.upper()} mode)" if mode_filter else ""
+    print(f"\n=== CYCLE HISTORY (Last {limit}){mode_text} ===\n")
 
     table_data = []
     for row in rows:
@@ -118,6 +127,16 @@ def show_history(limit=20):
         start = format_timestamp(row[3])
         duration = f"{(row[4] - row[3]):.1f}s" if row[4] else 'N/A'
         profit = format_amount(row[8]) if row[8] else 'N/A'
+
+        # Extract execution mode from metadata
+        execution_mode = 'live'  # default
+        if row[10]:  # metadata column
+            try:
+                import json
+                metadata = json.loads(row[10])
+                execution_mode = metadata.get('execution_mode', 'live')
+            except:
+                pass
 
         # Color code based on state
         if state == 'completed':
@@ -130,6 +149,7 @@ def show_history(limit=20):
         table_data.append([
             cycle_id,
             strategy,
+            execution_mode,
             state_display,
             start,
             duration,
@@ -138,32 +158,167 @@ def show_history(limit=20):
 
     print(tabulate(
         table_data,
-        headers=['Cycle ID', 'Strategy', 'State', 'Start Time', 'Duration', 'P/L'],
+        headers=['Cycle ID', 'Strategy', 'Mode', 'State', 'Start Time', 'Duration', 'P/L'],
         tablefmt='grid'
     ))
 
-    # Summary statistics
-    cursor = conn = sqlite3.connect('trade_state.db')
+    # Enhanced summary statistics with mode breakdown
+    show_execution_mode_summary(mode_filter)
+
+
+def show_execution_mode_summary(mode_filter=None):
+    """Show execution mode statistics"""
+    conn = sqlite3.connect('trade_state.db')
+    cursor = conn.cursor()
+
+    # Base query for all modes
+    if mode_filter:
+        cursor.execute('''
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN state = 'partial_filled' THEN 1 ELSE 0 END) as partial,
+                SUM(CASE WHEN state = 'completed' THEN profit_loss ELSE 0 END) as total_profit,
+                AVG(CASE WHEN state = 'completed' AND end_time IS NOT NULL
+                    THEN (end_time - start_time) ELSE NULL END) as avg_duration
+            FROM cycles
+            WHERE json_extract(metadata, '$.execution_mode') = ?
+        ''', (mode_filter,))
+        stats = cursor.fetchone()
+
+        print(f"\n=== {mode_filter.upper()} MODE STATISTICS ===")
+    else:
+        # Show breakdown by mode
+        cursor.execute('''
+            SELECT
+                COALESCE(json_extract(metadata, '$.execution_mode'), 'live') as mode,
+                COUNT(*) as total,
+                SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN state = 'partial_filled' THEN 1 ELSE 0 END) as partial,
+                SUM(CASE WHEN state = 'completed' THEN profit_loss ELSE 0 END) as total_profit
+            FROM cycles
+            GROUP BY COALESCE(json_extract(metadata, '$.execution_mode'), 'live')
+        ''')
+
+        mode_stats = cursor.fetchall()
+
+        if mode_stats:
+            print(f"\n=== EXECUTION MODE BREAKDOWN ===")
+            mode_table = []
+            for mode_stat in mode_stats:
+                mode, total, completed, failed, partial, profit = mode_stat
+                success_rate = (completed / total * 100) if total > 0 else 0
+                mode_table.append([
+                    mode.upper(),
+                    total,
+                    completed,
+                    failed,
+                    partial,
+                    f"{success_rate:.1f}%",
+                    f"{profit:.6f}" if profit else "0.000000"
+                ])
+
+            print(tabulate(
+                mode_table,
+                headers=['Mode', 'Total', 'Completed', 'Failed', 'Partial', 'Success Rate', 'Total P/L'],
+                tablefmt='grid'
+            ))
+
+        # Overall statistics
+        cursor.execute('''
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN state = 'partial_filled' THEN 1 ELSE 0 END) as partial,
+                SUM(CASE WHEN state = 'completed' THEN profit_loss ELSE 0 END) as total_profit
+            FROM cycles
+        ''')
+        stats = cursor.fetchone()
+        print(f"\n=== OVERALL STATISTICS ===")
+
+    conn.close()
+
+    if stats and stats[0] > 0:
+        total, completed, failed, partial, total_profit = stats[:5]
+        print(f"Total Cycles: {total}")
+        print(f"Completed: {completed} ({completed/total*100:.1f}%)")
+        print(f"Failed: {failed} ({failed/total*100:.1f}%)")
+        if partial:
+            print(f"Partial: {partial} ({partial/total*100:.1f}%)")
+        print(f"Total P/L: {total_profit:.6f}" if total_profit else "Total P/L: 0.000000")
+
+        if len(stats) > 5 and stats[5]:  # avg_duration
+            print(f"Average Duration: {stats[5]:.1f}s")
+
+
+def show_mode_performance():
+    """Show performance comparison across execution modes"""
+    conn = sqlite3.connect('trade_state.db')
     cursor = conn.cursor()
 
     cursor.execute('''
         SELECT
-            COUNT(*) as total,
+            COALESCE(json_extract(metadata, '$.execution_mode'), 'live') as mode,
+            COUNT(*) as total_cycles,
             SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END) as completed,
-            SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) as failed,
-            SUM(CASE WHEN state = 'completed' THEN profit_loss ELSE 0 END) as total_profit
+            AVG(CASE WHEN state = 'completed' AND profit_loss IS NOT NULL
+                THEN profit_loss ELSE 0 END) as avg_profit,
+            SUM(CASE WHEN state = 'completed' THEN profit_loss ELSE 0 END) as total_profit,
+            AVG(CASE WHEN state = 'completed' AND end_time IS NOT NULL
+                THEN (end_time - start_time) ELSE NULL END) as avg_duration,
+            MIN(start_time) as first_trade,
+            MAX(start_time) as last_trade
         FROM cycles
+        WHERE start_time > strftime('%s', 'now', '-30 days')
+        GROUP BY COALESCE(json_extract(metadata, '$.execution_mode'), 'live')
+        ORDER BY total_cycles DESC
     ''')
 
-    stats = cursor.fetchone()
+    results = cursor.fetchall()
     conn.close()
 
-    if stats[0] > 0:
-        print(f"\n=== STATISTICS ===")
-        print(f"Total Cycles: {stats[0]}")
-        print(f"Completed: {stats[1]} ({stats[1]/stats[0]*100:.1f}%)")
-        print(f"Failed: {stats[2]} ({stats[2]/stats[0]*100:.1f}%)")
-        print(f"Total P/L: {stats[3]:.6f}" if stats[3] else "Total P/L: 0")
+    if not results:
+        print("No cycle data found for the last 30 days.")
+        return
+
+    print("\n=== 30-DAY EXECUTION MODE PERFORMANCE ===\n")
+
+    table_data = []
+    for row in results:
+        mode, total, completed, avg_profit, total_profit, avg_duration, first, last = row
+
+        success_rate = (completed / total * 100) if total > 0 else 0
+        avg_profit_display = f"{avg_profit:.6f}" if avg_profit else "0.000000"
+        total_profit_display = f"{total_profit:.6f}" if total_profit else "0.000000"
+        avg_duration_display = f"{avg_duration:.1f}s" if avg_duration else "N/A"
+
+        # Calculate trading frequency
+        if first and last and total > 1:
+            days_active = (last - first) / 86400  # Convert to days
+            freq = f"{total/max(days_active, 1):.1f}/day" if days_active > 0 else "N/A"
+        else:
+            freq = "N/A"
+
+        table_data.append([
+            mode.upper(),
+            total,
+            completed,
+            f"{success_rate:.1f}%",
+            avg_profit_display,
+            total_profit_display,
+            avg_duration_display,
+            freq
+        ])
+
+    print(tabulate(
+        table_data,
+        headers=['Mode', 'Cycles', 'Completed', 'Success Rate', 'Avg Profit', 'Total Profit', 'Avg Duration', 'Frequency'],
+        tablefmt='grid'
+    ))
+    print()
 
 
 def show_cycle_details(cycle_id):
@@ -676,7 +831,7 @@ def show_suppression_summary(window_seconds=300):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Monitor trading cycles')
+    parser = argparse.ArgumentParser(description='Monitor trading cycles with execution mode support')
     parser.add_argument(
         '--active',
         action='store_true',
@@ -688,6 +843,21 @@ def main():
         nargs='?',
         const=20,
         help='Show cycle history (default: last 20)'
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['live', 'paper', 'backtest'],
+        help='Filter results by execution mode'
+    )
+    parser.add_argument(
+        '--mode-performance',
+        action='store_true',
+        help='Show performance comparison across execution modes'
+    )
+    parser.add_argument(
+        '--mode-summary',
+        action='store_true',
+        help='Show execution mode breakdown and statistics'
     )
     parser.add_argument(
         '--details',
@@ -801,7 +971,13 @@ def main():
         show_active_cycles()
 
     if args.history:
-        show_history(args.history)
+        show_history(args.history, mode_filter=args.mode)
+
+    if args.mode_performance:
+        show_mode_performance()
+
+    if args.mode_summary:
+        show_execution_mode_summary()
 
     if args.details:
         show_cycle_details(args.details)

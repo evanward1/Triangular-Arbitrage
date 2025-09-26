@@ -16,9 +16,7 @@ def test_monitor_cooldowns():
 
     try:
         manager = RiskControlManager(
-            max_leg_latency_ms=100,
-            max_slippage_bps=50,
-            slippage_cooldown_seconds=300
+            max_leg_latency_ms=100, max_slippage_bps=50, slippage_cooldown_seconds=300
         )
 
         manager.slippage_tracker.add_to_cooldown("BTC->ETH->USDT")
@@ -41,5 +39,5 @@ def test_monitor_cooldowns():
         shutil.rmtree(temp_dir)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     test_monitor_cooldowns()

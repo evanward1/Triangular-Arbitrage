@@ -1,3 +1,11 @@
+"""
+Triangular Arbitrage Trading System.
+
+A comprehensive trading system for detecting and executing triangular arbitrage
+opportunities across cryptocurrency exchanges. Supports live trading, paper trading,
+and backtesting with comprehensive risk controls and observability.
+"""
+
 PROJECT_NAME = "OctoBot-Triangular-Arbitrage"
 VERSION = "1.3.0"
 
@@ -11,7 +19,7 @@ from triangular_arbitrage.execution_engine import (
     CycleState,
     OrderState,
     CycleInfo,
-    OrderInfo
+    OrderInfo,
 )
 
 # Export enhanced components if available
@@ -20,25 +28,25 @@ try:
         EnhancedFailureRecoveryManager,
         MarketCondition,
         LiquidationPath,
-        ExecutionStep
+        ExecutionStep,
     )
 except ImportError:
     pass
 
 __all__ = [
-    'PROJECT_NAME',
-    'VERSION',
-    'StrategyExecutionEngine',
-    'StateManager',
-    'OrderManager',
-    'FailureRecoveryManager',
-    'EnhancedFailureRecoveryManager',
-    'ConfigurationManager',
-    'CycleState',
-    'OrderState',
-    'CycleInfo',
-    'OrderInfo',
-    'MarketCondition',
-    'LiquidationPath',
-    'ExecutionStep'
+    "PROJECT_NAME",
+    "VERSION",
+    "StrategyExecutionEngine",
+    "StateManager",
+    "OrderManager",
+    "FailureRecoveryManager",
+    "EnhancedFailureRecoveryManager",
+    "ConfigurationManager",
+    "CycleState",
+    "OrderState",
+    "CycleInfo",
+    "OrderInfo",
+    "MarketCondition",
+    "LiquidationPath",
+    "ExecutionStep",
 ]

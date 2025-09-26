@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  triangular-arbitrage:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    container_name: triangular-arbitrage-dev
+    volumes:
+      # Mount source code for live development
+      - .:/app
+      # Preserve pip cache
+      - pip-cache:/root/.cache/pip
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8000:8000"  # Prometheus metrics
+      - "3000:3000"  # Grafana (if used)
+    command: /bin/bash
+    stdin_open: true
+    tty: true
+    networks:
+      - arbitrage-network
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:v2.47.2
+    container_name: arbitrage-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    networks:
+      - arbitrage-network
+    depends_on:
+      - triangular-arbitrage
+
+  # Grafana for visualization (optional)
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: arbitrage-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    networks:
+      - arbitrage-network
+    depends_on:
+      - prometheus
+
+networks:
+  arbitrage-network:
+    driver: bridge
+
+volumes:
+  pip-cache:
+  prometheus-data:
+  grafana-data:
