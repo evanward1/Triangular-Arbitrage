@@ -1,4 +1,24 @@
-# main.py
+#!/usr/bin/env python3
+"""
+Main Entry Point for Triangular Arbitrage Trading System.
+
+This is the primary executable for running triangular arbitrage detection and
+execution. It provides an interactive interface for wallet management, opportunity
+detection, and trade execution with comprehensive error handling and logging.
+
+Key Features:
+    - Real-time wallet balance display with deposit addresses
+    - Interactive arbitrage opportunity detection
+    - Manual trade execution with profit calculations
+    - Integration with multiple exchange APIs
+    - Comprehensive error handling and user guidance
+
+Usage:
+    python main.py
+
+The program will prompt for exchange credentials and provide an interactive
+menu for various trading operations.
+"""
 
 import asyncio
 import os

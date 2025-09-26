@@ -23,7 +23,7 @@ def test_clear_cooldown_cli_with_confirmation():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         pair = "BTC->ETH->USDT"
@@ -32,8 +32,8 @@ def test_clear_cooldown_cli_with_confirmation():
 
         assert pair in manager.slippage_tracker.cooldown_cycles
 
-        with patch('builtins.input', return_value='y'):
-            with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+        with patch("builtins.input", return_value="y"):
+            with patch("sys.stdout", new_callable=StringIO) as mock_stdout:
                 success = manager.clear_cooldown(pair)
 
                 assert success is True
@@ -57,7 +57,7 @@ def test_clear_cooldown_cli_with_cancellation():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         pair = "BTC->ETH->USDT"
@@ -82,7 +82,7 @@ def test_clear_cooldown_success_message():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         pair = "ETH->USDT->BTC"
@@ -105,16 +105,16 @@ def test_clear_cooldown_success_message():
         shutil.rmtree(temp_dir)
 
 
-if __name__ == '__main__':
-    print("="*60)
+if __name__ == "__main__":
+    print("=" * 60)
     print("CLI SMOKE TEST: --clear-cooldown")
-    print("="*60)
+    print("=" * 60)
 
     test_clear_cooldown_cli_with_confirmation()
     test_clear_cooldown_cli_with_cancellation()
     test_clear_cooldown_success_message()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("ALL CLI SMOKE TESTS PASSED ✓")
-    print("="*60)
+    print("=" * 60)
     print()

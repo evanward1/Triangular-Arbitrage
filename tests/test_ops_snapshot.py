@@ -32,28 +32,28 @@ class TestOpsSnapshot:
             assert len(json_files) == 1
             assert len(md_files) == 1
 
-            with open(json_files[0], 'r') as f:
+            with open(json_files[0], "r") as f:
                 data = json.load(f)
 
-            assert 'metadata' in data
-            assert 'config' in data
-            assert 'active_cooldowns' in data
-            assert 'suppression_summary' in data
-            assert 'recent_suppressed' in data
+            assert "metadata" in data
+            assert "config" in data
+            assert "active_cooldowns" in data
+            assert "suppression_summary" in data
+            assert "recent_suppressed" in data
 
-            assert 'timestamp' in data['metadata']
-            assert 'hostname' in data['metadata']
-            assert 'python_version' in data['metadata']
-            assert 'platform' in data['metadata']
+            assert "timestamp" in data["metadata"]
+            assert "hostname" in data["metadata"]
+            assert "python_version" in data["metadata"]
+            assert "platform" in data["metadata"]
 
-            with open(md_files[0], 'r') as f:
+            with open(md_files[0], "r") as f:
                 md_content = f.read()
 
-            assert '# Operations Snapshot' in md_content
-            assert '## Configuration' in md_content
-            assert '## Active Cooldowns' in md_content
-            assert '## Suppression Summary' in md_content
-            assert '## Recent Suppressed Events' in md_content
+            assert "# Operations Snapshot" in md_content
+            assert "## Configuration" in md_content
+            assert "## Active Cooldowns" in md_content
+            assert "## Suppression Summary" in md_content
+            assert "## Recent Suppressed Events" in md_content
 
         finally:
             shutil.rmtree(temp_dir)
@@ -69,12 +69,12 @@ class TestOpsSnapshot:
             out_path = Path(out_dir)
             json_files = list(out_path.glob("ops_snapshot_*.json"))
 
-            with open(json_files[0], 'r') as f:
+            with open(json_files[0], "r") as f:
                 data = json.load(f)
 
-            assert 'suppression_summary' in data
-            assert 'total_suppressed' in data['suppression_summary']
-            assert 'unique_pairs' in data['suppression_summary']
+            assert "suppression_summary" in data
+            assert "total_suppressed" in data["suppression_summary"]
+            assert "unique_pairs" in data["suppression_summary"]
 
         finally:
             shutil.rmtree(temp_dir)
@@ -102,6 +102,7 @@ class TestHealthCheck:
         assert exit_code == 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import pytest
-    pytest.main([__file__, '-v'])
+
+    pytest.main([__file__, "-v"])

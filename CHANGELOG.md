@@ -1,73 +1,44 @@
 # Changelog
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - 2025-09-23
-### 🚀 MAJOR RELEASE: Lightning Arbitrage Engine
-#### Added
-- **Lightning Arbitrage Mode**: Execute profitable trades IMMEDIATELY when found (no ranking delays)
-- **Massive Opportunity Coverage**: Scan 1,920+ triangular arbitrage combinations from 329 currencies
-- **Native Coinbase Advanced Trading API**: Direct integration with proper credential handling
-- **Smart Profit Hunting**: Execute ALL profitable opportunities, not just the "best" one
-- **Real-Time Profit Calculation**: Live basis point calculations with fee accounting
-- **Comprehensive Cycle Generation**: `generate_all_cycles.py` creates thousands of arbitrage opportunities
-- **Multi-Tier Strategy Files**: Priority (500), Massive (1,000), and Complete (1,920) cycle options
+## [0.2.0] - 2025-09-26
 
-#### Changed
-- **BREAKING**: Execution strategy completely rewritten for immediate profit capture
-- **BREAKING**: Strategy files now use different cycle files (coinbase_cycles_*.csv)
-- Updated README.md with comprehensive lightning arbitrage documentation
-- Enhanced requirements.txt with all necessary dependencies
-
-#### Improved
-- Zero-delay execution eliminates opportunity loss from ranking/sorting
-- Professional-grade risk management with configurable profit thresholds
-- Real-time progress tracking and execution logging
-- Optimized API usage for maximum scanning speed
-
-#### Fixed
-- Eliminated critical timing delays that killed arbitrage opportunities
-- Fixed Coinbase API authentication issues with Advanced Trading credentials
-- Resolved profit calculation accuracy with proper fee accounting
-
-## [1.2.0] - 2024-10-24
 ### Added
-- cycle detection by @ruidazeng
+- **Reproducible Development Environment**: Docker and Docker Compose setup for consistent development
+- **Professional Documentation**: Comprehensive docstrings and inline comments throughout codebase
+- **Code Quality Tooling**: Pre-commit hooks, automated formatting (Black, isort), and linting (flake8)
+- **Type Safety**: MyPy integration with comprehensive type annotations
+- **Configuration Validation**: CLI tool for validating strategy configurations
+- **Testing Infrastructure**: Comprehensive unit, integration, and performance test suites
+- **Dependency Injection**: Time and RNG provider interfaces for better testability
+- **Exception Hierarchy**: Structured exception system for better error handling
+- **Metrics and Monitoring**: Prometheus metrics server with Grafana integration
+- **Build System**: Modern pyproject.toml with console script entry points
+- **Release Management**: Automated version bumping and changelog generation
 
-## [1.1.1] - 2024-09-07
-### Fixed
-- main profit result display
+### Enhanced
+- **Exchange Adapters**: Paper trading and backtesting exchange implementations
+- **Configuration System**: Normalized config loading with validation and defaults
+- **Logging System**: Structured logging with consistent formatting
+- **Constants Management**: Centralized enums and constants for maintainability
 
-## [1.1.0] - 2024-09-07
+### Changed
+- **Project Structure**: Reorganized codebase with proper module hierarchy
+- **Import System**: Consistent absolute imports and reduced circular dependencies
+- **Documentation**: Professional-grade docstrings following Google style
+- **Code Organization**: Consolidated utility functions and removed duplicate code
+
+## [0.1.0] - 2024-01-01
+
 ### Added
-- networkx dependencies
-
-## [1.0.6] - 2024-04-18
-### Added
-- Added `whitelisted_symbols` to `run_detection`
-
-## [1.0.5] - 2024-01-09
-### Fixed
-- Fix `is_delisted_symbols` 1.0.4 new condition
-
-## [1.0.4] - 2024-01-09
-### Fixed
-- Consider delisted symbol if `ticker_time` is None
-
-## [1.0.3] - 2024-01-08
-### Fixed
-- Add `None` check before restoring `best_triplet`
-
-## [1.0.2] - 2024-01-08
-### Added
-- `ignored_symbols` param to `run_detection`
-
-## [1.0.1] - 2023-10-18
-### Fixed
-- Added MANIFEST.in to fix PYPI installation
-
-## [1.0.0] - 2023-10-18
-### Added
-- Initial version
+- Initial triangular arbitrage trading system implementation
+- Basic opportunity detection using NetworkX graph algorithms
+- Core execution engine with multi-leg order coordination
+- Risk controls and position management
+- Coinbase Advanced Trading API integration
+- Basic paper trading simulation
+- Configuration-driven strategy system

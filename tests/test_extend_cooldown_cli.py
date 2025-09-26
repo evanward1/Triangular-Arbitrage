@@ -22,7 +22,7 @@ def test_extend_cooldown_cli():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         pair = "BTC->ETH->USDT"
@@ -31,7 +31,7 @@ def test_extend_cooldown_cli():
 
         remaining_before = manager.get_cycle_cooldown_remaining(["BTC", "ETH", "USDT"])
 
-        with patch('builtins.input', return_value='y'):
+        with patch("builtins.input", return_value="y"):
             success = manager.extend_cooldown(pair, 60)
 
         assert success is True
@@ -39,7 +39,9 @@ def test_extend_cooldown_cli():
         remaining_after = manager.get_cycle_cooldown_remaining(["BTC", "ETH", "USDT"])
         assert remaining_after > remaining_before
 
-        print(f"  ✓ Extended cooldown by 60s: {remaining_before:.1f}s → {remaining_after:.1f}s")
+        print(
+            f"  ✓ Extended cooldown by 60s: {remaining_before:.1f}s → {remaining_after:.1f}s"
+        )
 
     finally:
         shutil.rmtree(temp_dir)
@@ -56,7 +58,7 @@ def test_shorten_cooldown_cli():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         pair = "ETH->USDT->BTC"
@@ -65,7 +67,7 @@ def test_shorten_cooldown_cli():
 
         remaining_before = manager.get_cycle_cooldown_remaining(["ETH", "USDT", "BTC"])
 
-        with patch('builtins.input', return_value='y'):
+        with patch("builtins.input", return_value="y"):
             success = manager.extend_cooldown(pair, -30)
 
         assert success is True
@@ -73,7 +75,9 @@ def test_shorten_cooldown_cli():
         remaining_after = manager.get_cycle_cooldown_remaining(["ETH", "USDT", "BTC"])
         assert remaining_after < remaining_before
 
-        print(f"  ✓ Shortened cooldown by 30s: {remaining_before:.1f}s → {remaining_after:.1f}s")
+        print(
+            f"  ✓ Shortened cooldown by 30s: {remaining_before:.1f}s → {remaining_after:.1f}s"
+        )
 
     finally:
         shutil.rmtree(temp_dir)
@@ -90,7 +94,7 @@ def test_extend_cooldown_clamping():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=10,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         pair = "BTC->ETH->USDT"
@@ -120,7 +124,7 @@ def test_extend_not_found():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         success = manager.extend_cooldown("NONEXISTENT", 60)
@@ -133,17 +137,17 @@ def test_extend_not_found():
         shutil.rmtree(temp_dir)
 
 
-if __name__ == '__main__':
-    print("="*60)
+if __name__ == "__main__":
+    print("=" * 60)
     print("CLI SMOKE TEST: --extend/shorten-cooldown")
-    print("="*60)
+    print("=" * 60)
 
     test_extend_cooldown_cli()
     test_shorten_cooldown_cli()
     test_extend_cooldown_clamping()
     test_extend_not_found()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("ALL CLI SMOKE TESTS PASSED ✓")
-    print("="*60)
+    print("=" * 60)
     print()

@@ -23,7 +23,7 @@ def test_suppressed_view_with_events():
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
             duplicate_suppression_window=2.0,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         cycle_id = "BTC->ETH->USDT"
@@ -43,7 +43,7 @@ def test_suppressed_view_with_events():
                 slippages_bps=[0, 0, 0],
                 threshold_violated={"latency_ms": 150},
                 leg_details=[],
-                metadata={}
+                metadata={},
             )
             manager.logger.log_violation(violation, is_executed=False)
             time.sleep(0.05)
@@ -51,11 +51,13 @@ def test_suppressed_view_with_events():
         suppressed = manager.logger.get_recent_suppressed(limit=5)
 
         assert len(suppressed) == 1
-        assert suppressed[0]['cycle_id'] == cycle_id
-        assert suppressed[0]['stop_reason'] == stop_reason
-        assert suppressed[0]['duplicate_count'] == 2
+        assert suppressed[0]["cycle_id"] == cycle_id
+        assert suppressed[0]["stop_reason"] == stop_reason
+        assert suppressed[0]["duplicate_count"] == 2
 
-        print(f"  ✓ Suppressed {suppressed[0]['duplicate_count']} duplicates for {cycle_id}")
+        print(
+            f"  ✓ Suppressed {suppressed[0]['duplicate_count']} duplicates for {cycle_id}"
+        )
         print(f"  ✓ get_recent_suppressed() returns correct metadata")
 
     finally:
@@ -74,7 +76,7 @@ def test_suppressed_view_empty():
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
             duplicate_suppression_window=2.0,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         suppressed = manager.logger.get_recent_suppressed(limit=10)
@@ -99,13 +101,13 @@ def test_suppressed_view_multiple_cycles():
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
             duplicate_suppression_window=2.0,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         cycles = [
             ("BTC->ETH->USDT", "latency_exceeded"),
             ("ETH->USDT->BTC", "slippage_exceeded"),
-            ("USDT->BTC->ETH", "latency_exceeded")
+            ("USDT->BTC->ETH", "latency_exceeded"),
         ]
 
         for cycle_id, reason in cycles:
@@ -123,7 +125,7 @@ def test_suppressed_view_multiple_cycles():
                     slippages_bps=[0, 0, 0],
                     threshold_violated={},
                     leg_details=[],
-                    metadata={}
+                    metadata={},
                 )
                 manager.logger.log_violation(violation, is_executed=False)
                 time.sleep(0.01)
@@ -133,7 +135,7 @@ def test_suppressed_view_multiple_cycles():
 
         assert len(suppressed) == 3
 
-        cycle_ids = {s['cycle_id'] for s in suppressed}
+        cycle_ids = {s["cycle_id"] for s in suppressed}
         assert "BTC->ETH->USDT" in cycle_ids
         assert "ETH->USDT->BTC" in cycle_ids
         assert "USDT->BTC->ETH" in cycle_ids
@@ -145,16 +147,16 @@ def test_suppressed_view_multiple_cycles():
         shutil.rmtree(temp_dir)
 
 
-if __name__ == '__main__':
-    print("="*60)
+if __name__ == "__main__":
+    print("=" * 60)
     print("CLI SMOKE TEST: --suppressed View")
-    print("="*60)
+    print("=" * 60)
 
     test_suppressed_view_with_events()
     test_suppressed_view_empty()
     test_suppressed_view_multiple_cycles()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("ALL CLI SMOKE TESTS PASSED ✓")
-    print("="*60)
+    print("=" * 60)
     print()

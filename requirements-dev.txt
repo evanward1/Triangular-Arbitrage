@@ -1,0 +1,38 @@
+# Development and testing dependencies
+# Pinned versions for reproducibility
+
+# Testing framework
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+
+# Code quality and formatting
+black==23.11.0
+isort==5.12.0
+flake8==6.1.0
+flake8-docstrings==1.7.0
+
+# Type checking
+mypy==1.7.1
+types-PyYAML==6.0.12.12
+types-requests==2.31.0.10
+
+# Pre-commit hooks
+pre-commit==3.5.0
+
+# Monitoring and metrics
+prometheus-client==0.19.0
+
+# Development utilities
+ipython==8.17.2
+jupyter==1.0.0
+
+# Documentation
+mkdocs==1.5.3
+mkdocs-material==9.4.8
+
+# Build tools
+build==1.0.3
+twine==4.0.2
+wheel==0.42.0

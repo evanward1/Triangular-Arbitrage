@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """
-Strategy Runner - Execute trading strategies using configuration files
+Enhanced Strategy Runner - Execute trading strategies with multi-mode support
+
+Supports live trading, paper trading, and backtesting execution modes.
 
 Usage:
-    python run_strategy.py --strategy configs/strategies/strategy_1.yaml [--recover]
+    # Live trading
+    python run_strategy.py --strategy configs/strategies/strategy_1.yaml --mode live
+
+    # Paper trading
+    python run_strategy.py --strategy configs/strategies/strategy_1.yaml --mode paper
+
+    # Backtesting (use backtests/run_backtest.py for full backtesting)
+    python run_strategy.py --strategy configs/strategies/strategy_1.yaml --mode backtest
 """
 
 import asyncio
@@ -22,6 +31,13 @@ from triangular_arbitrage.execution_engine import (
     StateManager,
     CycleState
 )
+from triangular_arbitrage.exchanges import (
+    ExchangeAdapter,
+    LiveExchangeAdapter,
+    PaperExchange,
+    BacktestExchange
+)
+from triangular_arbitrage.config_schema import validate_strategy_config
 from coinbase_adapter import CoinbaseAdvancedAdapter
 
 
@@ -46,12 +62,89 @@ def load_cycles_from_csv(csv_path: str):
     return cycles
 
 
+def create_exchange_adapter(strategy_config: dict, execution_mode: str, args) -> ExchangeAdapter:
+    """Create appropriate exchange adapter based on execution mode"""
+
+    if execution_mode == 'backtest':
+        # Use BacktestExchange for backtesting
+        backtest_config = strategy_config.get('execution', {}).get('backtest', {})
+        backtest_config.update({
+            'execution_mode': 'backtest',
+            'data_file': args.data_file or backtest_config.get('data_file', 'data/backtests/sample_feed.csv'),
+            'start_time': args.start_time,
+            'end_time': args.end_time,
+            'random_seed': args.random_seed or backtest_config.get('random_seed', 42),
+            'time_acceleration': args.time_acceleration or backtest_config.get('time_acceleration', 1.0)
+        })
+        return BacktestExchange(backtest_config)
+
+    elif execution_mode == 'paper':
+        # Create live exchange first, then wrap with PaperExchange
+        live_exchange = create_live_exchange(strategy_config, args)
+
+        paper_config = strategy_config.get('execution', {}).get('paper', {})
+        paper_config.update({
+            'execution_mode': 'paper',
+            'random_seed': args.random_seed or paper_config.get('random_seed', 42)
+        })
+
+        return PaperExchange(live_exchange, paper_config)
+
+    else:  # live mode
+        live_exchange = create_live_exchange(strategy_config, args)
+        return LiveExchangeAdapter(live_exchange, {'execution_mode': 'live'})
+
+
+def create_live_exchange(strategy_config: dict, args):
+    """Create live exchange instance"""
+    exchange_name = strategy_config['exchange']
+    api_key = os.getenv("EXCHANGE_API_KEY") or args.api_key
+    api_secret = os.getenv("EXCHANGE_API_SECRET") or args.api_secret
+
+    if not api_key or not api_secret:
+        if args.mode == 'live':
+            raise ValueError("API credentials required for live trading mode")
+        # For paper mode, we still need credentials to get live market data
+        logging.warning("No API credentials provided - using demo mode")
+
+    # Use Coinbase Advanced Trading API for coinbase exchange
+    if exchange_name == 'coinbase':
+        if not api_key or not api_secret:
+            raise ValueError("Coinbase requires API credentials")
+        return CoinbaseAdvancedAdapter(api_key, api_secret, sandbox=(args.mode != 'live'))
+    else:
+        exchange_class = getattr(ccxt, exchange_name)
+
+        # Configure exchange with proper credentials
+        exchange_config = {
+            'enableRateLimit': True,
+            'options': {
+                'createMarketBuyOrderRequiresPrice': False
+            }
+        }
+
+        # Add credentials if available
+        if api_key and api_secret:
+            exchange_config['apiKey'] = api_key
+            exchange_config['secret'] = api_secret
+            # For Coinbase APIs, use sandbox for non-live modes
+            if exchange_name == 'coinbasepro' and args.mode != 'live':
+                exchange_config['sandbox'] = True
+
+        return exchange_class(exchange_config)
+
+
 async def main():
-    parser = argparse.ArgumentParser(description='Execute trading strategy')
+    parser = argparse.ArgumentParser(description='Execute trading strategy with multi-mode support')
     parser.add_argument(
         '--strategy',
         required=True,
         help='Path to strategy YAML configuration file'
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['live', 'paper', 'backtest'],
+        help='Execution mode (overrides YAML config)'
     )
     parser.add_argument(
         '--recover',
@@ -72,8 +165,24 @@ async def main():
     parser.add_argument(
         '--dry-run',
         action='store_true',
-        help='Run in simulation mode without real trades'
+        help='DEPRECATED: Use --mode paper instead'
     )
+
+    # Mode-specific arguments
+    parser.add_argument('--api-key', help='Exchange API key (overrides env var)')
+    parser.add_argument('--api-secret', help='Exchange API secret (overrides env var)')
+    parser.add_argument('--random-seed', type=int, help='Random seed for paper/backtest modes')
+
+    # Backtest-specific arguments
+    parser.add_argument('--data-file', help='Backtest data file path')
+    parser.add_argument('--start-time', type=float, help='Backtest start time (Unix timestamp)')
+    parser.add_argument('--end-time', type=float, help='Backtest end time (Unix timestamp)')
+    parser.add_argument('--time-acceleration', type=float, help='Time acceleration factor')
+
+    # Paper trading arguments
+    parser.add_argument('--paper-balance', action='append', nargs=2, metavar=('CURRENCY', 'AMOUNT'),
+                       help='Set paper trading balance (can be used multiple times)')
+
     parser.add_argument(
         '--log-level',
         default='INFO',
@@ -83,12 +192,20 @@ async def main():
 
     args = parser.parse_args()
 
+    # Handle deprecated dry-run flag
+    if args.dry_run:
+        args.mode = 'paper'
+
     # Setup logging
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     logger = logging.getLogger(__name__)
+
+    # Handle deprecated dry-run warning
+    if args.dry_run:
+        logger.warning("--dry-run is deprecated, using --mode paper instead")
 
     # Load environment variables
     load_dotenv()
@@ -102,66 +219,72 @@ async def main():
         logger.error(f"Failed to load strategy: {e}")
         return 1
 
-    logger.info(f"Loaded strategy: {strategy_config['name']}")
+    # Validate configuration schema
+    try:
+        validated_config = validate_strategy_config(strategy_config)
+        logger.info(f"✓ Configuration validation passed")
 
-    # Setup exchange connection
-    exchange_name = strategy_config['exchange']
-    api_key = os.getenv("EXCHANGE_API_KEY")
-    api_secret = os.getenv("EXCHANGE_API_SECRET")
+        # Log any warnings identified during validation
+        warnings = []
+        if validated_config.min_profit_bps <= 5:
+            warnings.append("min_profit_bps is very low (≤5 bps) - may result in unprofitable trades")
+        if validated_config.max_slippage_bps > validated_config.min_profit_bps:
+            warnings.append(f"max_slippage_bps ({validated_config.max_slippage_bps}) > min_profit_bps ({validated_config.min_profit_bps}) - may result in losses")
 
-    if not args.dry_run and (not api_key or not api_secret):
-        logger.error("EXCHANGE_API_KEY or EXCHANGE_API_SECRET not found in .env file")
+        for warning in warnings:
+            logger.warning(f"⚠️  {warning}")
+
+    except Exception as e:
+        logger.error(f"❌ Configuration validation failed: {e}")
+        logger.error("Please check your configuration file and fix the validation errors")
+        logger.error(f"Use 'python tools/validate_config.py {args.strategy}' for detailed validation information")
         return 1
 
-    # Use Coinbase Advanced Trading API for coinbase exchange
-    if exchange_name == 'coinbase':
-        if not api_key or not api_secret:
-            logger.error("Coinbase requires API credentials")
-            return 1
-        exchange = CoinbaseAdvancedAdapter(api_key, api_secret, sandbox=args.dry_run)
-    else:
-        exchange_class = getattr(ccxt, exchange_name)
+    logger.info(f"Loaded strategy: {strategy_config['name']}")
 
-        # Configure exchange with proper credentials
-        exchange_config = {
-            'enableRateLimit': True,
-            'options': {
-                'createMarketBuyOrderRequiresPrice': False
-            }
-        }
+    # Determine execution mode (CLI args override YAML config)
+    execution_mode = args.mode
+    if not execution_mode:
+        execution_mode = strategy_config.get('execution', {}).get('mode', 'live')
 
-        # Add credentials if not in dry-run mode or if required for Coinbase
-        if not args.dry_run or exchange_name in ['coinbasepro']:
-            if api_key and api_secret:
-                exchange_config['apiKey'] = api_key
-                exchange_config['secret'] = api_secret
-                # For Coinbase APIs, use sandbox for dry-runs
-                if exchange_name == 'coinbasepro' and args.dry_run:
-                    exchange_config['sandbox'] = True
+    logger.info(f"🚀 Running in {execution_mode.upper()} mode")
 
-        exchange = exchange_class(exchange_config)
+    # Override paper balance if specified
+    if args.paper_balance and execution_mode == 'paper':
+        paper_config = strategy_config.setdefault('execution', {}).setdefault('paper', {})
+        initial_balances = paper_config.setdefault('initial_balances', {})
+        for currency, amount in args.paper_balance:
+            initial_balances[currency] = float(amount)
+            logger.info(f"Set paper balance: {currency} = {amount}")
+
+    # Create appropriate exchange adapter
+    try:
+        exchange = create_exchange_adapter(strategy_config, execution_mode, args)
+    except Exception as e:
+        logger.error(f"Failed to create exchange adapter: {e}")
+        return 1
 
     try:
-        # Load markets
-        await exchange.load_markets()
-        logger.info(f"Connected to {exchange_name}")
+        # Initialize exchange
+        await exchange.initialize()
+        logger.info(f"✅ Connected to {strategy_config['exchange']} in {execution_mode} mode")
 
-        # Create execution engine
+        # Create execution engine with exchange adapter
         engine = StrategyExecutionEngine(exchange, strategy_config)
 
         # Initialize async components
         await engine.initialize()
 
-        # Load cooldown state if resuming
-        if args.resume and engine.risk_control_manager:
+        # Load cooldown state if resuming (not applicable for backtest mode)
+        if args.resume and execution_mode != 'backtest' and hasattr(engine, 'risk_control_manager') and engine.risk_control_manager:
             restored = engine.risk_control_manager.load_cooldowns()
             if restored > 0:
                 logger.info(f"✓ Resumed with {restored} active cooldowns from previous run")
             else:
                 logger.info("No active cooldowns to resume")
 
-        # Handle recovery if requested
-        if args.recover:
+        # Handle recovery if requested (not applicable for backtest mode)
+        if args.recover and execution_mode != 'backtest':
             logger.info("Recovering active cycles...")
             await engine.recover_active_cycles()
 
@@ -178,22 +301,16 @@ async def main():
             logger.error("No cycles found in CSV file")
             return 1
 
-        # Get account balance (skip for dry-runs or use mock data for problematic exchanges)
-        if args.dry_run:
-            # Mock balances for dry-run testing
-            balances = {'free': {'BTC': 1.0, 'ETH': 10.0, 'USDT': 10000.0, 'USDC': 10000.0, 'SOL': 100.0, 'ADA': 1000.0, 'DOT': 100.0, 'AVAX': 50.0, 'LINK': 100.0, 'LTC': 100.0, 'XRP': 1000.0, 'TRX': 10000.0, 'DOGE': 10000.0}}
-            logger.info("Using mock balances for dry-run")
-        else:
-            balances = await exchange.fetch_balance()
+        # Get account balance
+        balances = await exchange.fetch_balance()
+        logger.info(f"Current balances: {[(k, v) for k, v in balances.items() if v > 0.001][:5]}")
 
-        # 🚀 LIGHTNING-FAST ARBITRAGE HUNTING 🚀
-        # Execute profitable trades IMMEDIATELY when found (no delays!)
-        from triangular_arbitrage.trade_executor import calculate_arbitrage_profit, execute_cycle_legacy
+        # Execute cycles
         min_profit_bps = strategy_config.get('min_profit_bps', 7)
         max_executions = args.cycles
 
-        logger.info(f"⚡ LIGHTNING ARBITRAGE MODE: Scanning {len(cycles)} cycles")
-        logger.info(f"🎯 Will execute ALL profitable opportunities immediately (max {max_executions})")
+        logger.info(f"⚡ EXECUTION MODE: {execution_mode.upper()}")
+        logger.info(f"🎯 Will execute up to {max_executions} cycles")
         logger.info(f"💰 Minimum profit threshold: {min_profit_bps} basis points")
 
         executed = 0
@@ -207,7 +324,7 @@ async def main():
 
             scanned_count += 1
             start_currency = cycle[0]
-            available = balances.get('free', {}).get(start_currency, 0)
+            available = balances.get(start_currency, 0)
 
             if available <= 0:
                 continue
@@ -219,69 +336,79 @@ async def main():
             elif capital_config['mode'] == 'fixed_amount':
                 amount = min(capital_config.get('amount', available), available)
             else:
-                amount = available
+                amount = available * 0.1  # Conservative default
 
-            # Calculate profit for this cycle
+            # Skip if amount too small
+            if amount < 0.001:
+                continue
+
+            cycle_name = ' -> '.join(cycle + [cycle[0]])
+            logger.info(f"[{scanned_count:3d}/{len(cycles)}] Testing cycle: {cycle_name}")
+            logger.info(f"Amount: {amount:.6f} {start_currency}")
+
             try:
-                final_amount, profit_bps, is_profitable = await calculate_arbitrage_profit(
-                    exchange, cycle, amount, min_profit_bps
-                )
+                # Execute cycle directly with the new engine
+                cycle_info = await engine.execute_cycle(cycle, amount)
 
-                cycle_name = ' -> '.join(cycle + [cycle[0]])
-                profit_status = f"📊 [{scanned_count:3d}/{len(cycles)}] {cycle_name}: {profit_bps:+6.1f} bps"
-
-                # 🔥 EXECUTE IMMEDIATELY IF PROFITABLE 🔥
-                if is_profitable:
+                if cycle_info.state == CycleState.COMPLETED:
                     executed += 1
-                    logger.info(f"{profit_status} 🔥 PROFITABLE! EXECUTING NOW!")
-                    logger.info(f"⚡ Execution #{executed}: {amount:.8f} {start_currency}")
+                    pnl = cycle_info.profit_loss or 0.0
+                    pnl_bps = (pnl / cycle_info.initial_amount) * 10000 if cycle_info.initial_amount > 0 else 0.0
+                    logger.info(f"✅ Cycle completed: PnL {pnl:+.6f} ({pnl_bps:+.1f} bps)")
 
-                    if args.dry_run:
-                        logger.info("🧪 DRY RUN - Simulating execution")
-                        await execute_cycle_legacy(exchange, cycle, amount, is_dry_run=True, min_profit_bps=min_profit_bps)
-                    else:
-                        # Execute with the new engine
-                        cycle_info = await engine.execute_cycle(cycle, amount)
+                    # Update balances for next iteration
+                    balances = await exchange.fetch_balance()
 
-                        if cycle_info.state == CycleState.COMPLETED:
-                            logger.info(f"✅ Trade completed. P/L: {cycle_info.profit_loss:.8f}")
-                        else:
-                            logger.error(f"❌ Trade failed: {cycle_info.error_message}")
-
-                        # Check for consecutive losses
-                        if engine.consecutive_losses >= engine.max_consecutive_losses:
-                            logger.warning(f"🛑 Stopping: {engine.consecutive_losses} consecutive losses")
-                            break
-
-                    logger.info(f"💎 Profit locked in! Moving to next opportunity...\n")
-
+                elif cycle_info.state == CycleState.PARTIALLY_FILLED:
+                    logger.info(f"⚠️  Cycle partial: {cycle_info.error_message}")
                 else:
-                    logger.info(f"{profit_status}")  # Show unprofitable result
+                    logger.info(f"❌ Cycle failed: {cycle_info.error_message}")
+
+                # Check for consecutive losses (not applicable in backtest mode)
+                if execution_mode != 'backtest' and hasattr(engine, 'consecutive_losses'):
+                    if engine.consecutive_losses >= engine.max_consecutive_losses:
+                        logger.warning(f"🛑 Stopping: {engine.consecutive_losses} consecutive losses")
+                        break
 
                 # Show progress every 25 cycles
                 if scanned_count % 25 == 0:
-                    logger.info(f"📊 Progress: {scanned_count}/{len(cycles)} scanned, {executed} profitable executed")
+                    logger.info(f"📊 Progress: {scanned_count}/{len(cycles)} scanned, {executed} executed")
 
             except Exception as e:
-                logger.warning(f"Failed to analyze cycle {cycle}: {e}")
+                logger.warning(f"Failed to execute cycle {cycle}: {e}")
 
         # Final summary
-        logger.info(f"\n🎯 ARBITRAGE HUNT COMPLETE!")
-        logger.info(f"📊 Scanned: {scanned_count}/{len(cycles)} cycles")
-        logger.info(f"💰 Executed: {executed} profitable trades")
+        logger.info(f"\n🎯 EXECUTION COMPLETE!")
+        logger.info(f"📊 Tested: {scanned_count}/{len(cycles)} cycles")
+        logger.info(f"💰 Executed: {executed} cycles")
 
-        logger.info(f"Executed {executed} cycles")
+        # Show execution metrics if available
+        if hasattr(exchange, 'get_execution_metrics'):
+            metrics = await exchange.get_execution_metrics()
+            if metrics:
+                logger.info(f"📈 Execution metrics:")
+                if 'fill_rate' in metrics:
+                    logger.info(f"   Fill rate: {metrics['fill_rate']:.1%}")
+                if 'average_slippage_bps' in metrics:
+                    logger.info(f"   Avg slippage: {metrics['average_slippage_bps']:.1f} bps")
+                if 'total_fees_paid' in metrics:
+                    logger.info(f"   Total fees: {metrics['total_fees_paid']:.6f}")
 
-        # Cleanup old cycle records (older than 7 days)
-        state_manager = StateManager()
-        state_manager.cleanup_old_cycles(days=7)
+        # Final balances
+        final_balances = await exchange.fetch_balance()
+        logger.info(f"Final balances: {[(k, v) for k, v in final_balances.items() if v > 0.001]}")
 
-        # Save cooldown state for resume
-        if engine.risk_control_manager:
-            try:
-                engine.risk_control_manager.save_cooldowns()
-            except Exception as e:
-                logger.warning(f"Failed to save cooldown state: {e}")
+        # Cleanup old cycle records (older than 7 days) - skip for backtest
+        if execution_mode != 'backtest':
+            state_manager = StateManager()
+            await state_manager.cleanup_old_cycles(days=7)
+
+            # Save cooldown state for resume
+            if hasattr(engine, 'risk_control_manager') and engine.risk_control_manager:
+                try:
+                    engine.risk_control_manager.save_cooldowns()
+                except Exception as e:
+                    logger.warning(f"Failed to save cooldown state: {e}")
 
     except Exception as e:
         logger.error(f"Execution failed: {e}", exc_info=True)

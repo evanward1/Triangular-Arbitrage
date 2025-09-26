@@ -21,7 +21,7 @@ def test_clear_all_cooldowns_with_confirmation():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         manager.slippage_tracker.add_to_cooldown("BTC->ETH->USDT")
@@ -31,7 +31,7 @@ def test_clear_all_cooldowns_with_confirmation():
 
         assert len(manager.slippage_tracker.cooldown_cycles) == 3
 
-        with patch('builtins.input', return_value='y'):
+        with patch("builtins.input", return_value="y"):
             count = manager.clear_all_cooldowns()
 
         assert count == 3
@@ -58,7 +58,7 @@ def test_clear_all_cooldowns_when_empty():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         count = manager.clear_all_cooldowns()
@@ -83,7 +83,7 @@ def test_clear_all_updates_state_file():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         manager.slippage_tracker.add_to_cooldown("BTC->ETH->USDT")
@@ -91,13 +91,14 @@ def test_clear_all_updates_state_file():
         manager.save_cooldowns()
 
         import json
-        with open(state_file, 'r') as f:
+
+        with open(state_file, "r") as f:
             data_before = json.load(f)
         assert len(data_before) == 2
 
         manager.clear_all_cooldowns()
 
-        with open(state_file, 'r') as f:
+        with open(state_file, "r") as f:
             data_after = json.load(f)
         assert len(data_after) == 0
 
@@ -108,16 +109,16 @@ def test_clear_all_updates_state_file():
         shutil.rmtree(temp_dir)
 
 
-if __name__ == '__main__':
-    print("="*60)
+if __name__ == "__main__":
+    print("=" * 60)
     print("CLI SMOKE TEST: --clear-all-cooldowns")
-    print("="*60)
+    print("=" * 60)
 
     test_clear_all_cooldowns_with_confirmation()
     test_clear_all_cooldowns_when_empty()
     test_clear_all_updates_state_file()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("ALL CLI SMOKE TESTS PASSED ✓")
-    print("="*60)
+    print("=" * 60)
     print()

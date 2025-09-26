@@ -17,9 +17,9 @@ from triangular_arbitrage.risk_controls import RiskControlManager
 
 
 def test_clear_cooldown_acceptance():
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("CLEAR COOLDOWN ACCEPTANCE TEST")
-    print("="*60)
+    print("=" * 60)
 
     temp_dir = tempfile.mkdtemp()
 
@@ -29,7 +29,7 @@ def test_clear_cooldown_acceptance():
             max_leg_latency_ms=100,
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
         state_file = f"{temp_dir}/cooldowns_state.json"
         print(f"   ✓ Manager created with state file: {state_file}")
@@ -44,7 +44,7 @@ def test_clear_cooldown_acceptance():
         manager.save_cooldowns()
         assert Path(state_file).exists()
 
-        with open(state_file, 'r') as f:
+        with open(state_file, "r") as f:
             before_data = json.load(f)
         assert len(before_data) == 3
         print(f"   ✓ State file contains {len(before_data)} cooldowns")
@@ -64,20 +64,26 @@ def test_clear_cooldown_acceptance():
         print("\n6. Verifying state file was updated...")
         assert Path(state_file).exists()
 
-        with open(state_file, 'r') as f:
+        with open(state_file, "r") as f:
             after_data = json.load(f)
 
         assert len(after_data) == 2, f"Expected 2 cooldowns, got {len(after_data)}"
-        assert target_pair not in after_data, f"{target_pair} should not be in state file"
+        assert (
+            target_pair not in after_data
+        ), f"{target_pair} should not be in state file"
         print(f"   ✓ State file now contains {len(after_data)} cooldowns")
         print(f"   ✓ {target_pair} removed from state file")
 
         print("\n7. Verifying get_active_cooldowns()...")
         active_after = manager.get_active_cooldowns()
-        assert len(active_after) == 2, f"Expected 2 active cooldowns, got {len(active_after)}"
+        assert (
+            len(active_after) == 2
+        ), f"Expected 2 active cooldowns, got {len(active_after)}"
 
         active_pairs = [pair for pair, _ in active_after]
-        assert target_pair not in active_pairs, f"{target_pair} should not be in active list"
+        assert (
+            target_pair not in active_pairs
+        ), f"{target_pair} should not be in active list"
         print(f"   ✓ get_active_cooldowns() returns {len(active_after)} pairs")
         print(f"   ✓ {target_pair} not in active cooldowns")
 
@@ -90,12 +96,14 @@ def test_clear_cooldown_acceptance():
 
         print("\n9. Testing clear of non-existent pair...")
         success = manager.clear_cooldown("NONEXISTENT->PAIR->XYZ")
-        assert success is False, "clear_cooldown should return False for non-existent pair"
+        assert (
+            success is False
+        ), "clear_cooldown should return False for non-existent pair"
         print(f"   ✓ clear_cooldown() correctly returns False for non-existent pair")
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("ACCEPTANCE TEST PASSED ✓")
-        print("="*60)
+        print("=" * 60)
         print("\nVerified:")
         print("  ✓ clear_cooldown() returns True for active pair")
         print("  ✓ clear_cooldown() returns False for non-existent pair")
@@ -109,5 +117,5 @@ def test_clear_cooldown_acceptance():
         shutil.rmtree(temp_dir)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     test_clear_cooldown_acceptance()

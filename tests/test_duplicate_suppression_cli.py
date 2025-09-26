@@ -21,7 +21,7 @@ def test_suppression_stats_displayed():
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
             duplicate_suppression_window=2.0,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         cycle_id = "test-cycle-1"
@@ -40,7 +40,7 @@ def test_suppression_stats_displayed():
             slippages_bps=[0, 0, 0],
             threshold_violated={"latency_ms": 150},
             leg_details=[],
-            metadata={}
+            metadata={},
         )
 
         manager.logger.log_violation(violation, is_executed=False)
@@ -49,15 +49,19 @@ def test_suppression_stats_displayed():
 
         stats = manager.get_stats()
 
-        assert 'suppression' in stats
-        assert stats['suppression']['total_duplicates_suppressed'] == 1
-        assert stats['suppression']['cache_size'] == 1
-        assert stats['suppression']['suppression_window_seconds'] == 2.0
+        assert "suppression" in stats
+        assert stats["suppression"]["total_duplicates_suppressed"] == 1
+        assert stats["suppression"]["cache_size"] == 1
+        assert stats["suppression"]["suppression_window_seconds"] == 2.0
 
         print(f"  ✓ Stats contain suppression section")
-        print(f"  ✓ Total duplicates suppressed: {stats['suppression']['total_duplicates_suppressed']}")
+        print(
+            f"  ✓ Total duplicates suppressed: {stats['suppression']['total_duplicates_suppressed']}"
+        )
         print(f"  ✓ Cache size: {stats['suppression']['cache_size']}")
-        print(f"  ✓ Suppression window: {stats['suppression']['suppression_window_seconds']}s")
+        print(
+            f"  ✓ Suppression window: {stats['suppression']['suppression_window_seconds']}s"
+        )
 
     finally:
         shutil.rmtree(temp_dir)
@@ -75,7 +79,7 @@ def test_no_suppression_when_disabled():
             max_slippage_bps=50,
             slippage_cooldown_seconds=300,
             duplicate_suppression_window=0.0,
-            log_dir=temp_dir
+            log_dir=temp_dir,
         )
 
         cycle_id = "test-cycle-1"
@@ -94,7 +98,7 @@ def test_no_suppression_when_disabled():
             slippages_bps=[0, 0, 0],
             threshold_violated={"latency_ms": 150},
             leg_details=[],
-            metadata={}
+            metadata={},
         )
 
         manager.logger.log_violation(violation, is_executed=False)
@@ -103,8 +107,8 @@ def test_no_suppression_when_disabled():
 
         stats = manager.logger.get_suppression_stats()
 
-        assert stats['suppression_window_seconds'] == 0.0
-        assert stats['total_duplicates_suppressed'] == 0
+        assert stats["suppression_window_seconds"] == 0.0
+        assert stats["total_duplicates_suppressed"] == 0
 
         print(f"  ✓ Suppression window set to 0.0")
         print(f"  ✓ No duplicates suppressed (window disabled)")
@@ -113,15 +117,15 @@ def test_no_suppression_when_disabled():
         shutil.rmtree(temp_dir)
 
 
-if __name__ == '__main__':
-    print("="*60)
+if __name__ == "__main__":
+    print("=" * 60)
     print("CLI SMOKE TEST: Duplicate Suppression")
-    print("="*60)
+    print("=" * 60)
 
     test_suppression_stats_displayed()
     test_no_suppression_when_disabled()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("ALL CLI SMOKE TESTS PASSED ✓")
-    print("="*60)
+    print("=" * 60)
     print()
