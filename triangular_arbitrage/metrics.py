@@ -434,8 +434,10 @@ class TradingMetrics:
         """Handle metrics endpoint requests"""
         try:
             metrics_output = generate_latest(self.registry)
+            # Strip charset from content type to avoid conflicts with aiohttp
+            content_type = CONTENT_TYPE_LATEST.split(';')[0]  # Remove charset part
             return web.Response(
-                text=metrics_output.decode("utf-8"), content_type=CONTENT_TYPE_LATEST
+                text=metrics_output.decode("utf-8"), content_type=content_type
             )
         except Exception as e:
             logger.error(f"Error generating metrics: {e}")

@@ -38,43 +38,45 @@ class TestPerformanceBenchmarks:
     """Performance benchmarks for critical components"""
 
     @pytest.mark.benchmark(group="exchange")
-    @pytest.mark.asyncio
-    async def test_paper_exchange_order_throughput(
+    def test_paper_exchange_order_throughput(
         self, benchmark, mock_live_exchange, paper_exchange_config
     ):
         """Benchmark paper exchange order processing speed"""
-        exchange = PaperExchange(mock_live_exchange, paper_exchange_config)
-        await exchange.initialize()
+        import asyncio
 
-        from triangular_arbitrage.exchanges.base_adapter import OrderSide
-
-        async def place_order():
-            return await exchange.create_market_order("BTC/USDT", OrderSide.BUY, 0.01)
+        def sync_place_order():
+            async def place_order():
+                exchange = PaperExchange(mock_live_exchange, paper_exchange_config)
+                await exchange.initialize()
+                from triangular_arbitrage.exchanges.base_adapter import OrderSide
+                return await exchange.create_market_order("BTC/USDT", OrderSide.BUY, 0.01)
+            return asyncio.run(place_order())
 
         # Benchmark single order execution
-        result = benchmark(asyncio.run, place_order())
+        result = benchmark(sync_place_order)
         assert result.status in ["filled", "partial"]
 
     @pytest.mark.benchmark(group="exchange")
-    @pytest.mark.asyncio
-    async def test_paper_exchange_batch_orders(
+    def test_paper_exchange_batch_orders(
         self, benchmark, mock_live_exchange, paper_exchange_config
     ):
         """Benchmark batch order processing"""
-        exchange = PaperExchange(mock_live_exchange, paper_exchange_config)
-        await exchange.initialize()
+        import asyncio
 
-        from triangular_arbitrage.exchanges.base_adapter import OrderSide
-
-        async def place_batch_orders():
-            tasks = []
-            for i in range(10):
-                task = exchange.create_market_order("BTC/USDT", OrderSide.BUY, 0.001)
-                tasks.append(task)
-            return await asyncio.gather(*tasks)
+        def sync_place_batch_orders():
+            async def place_batch_orders():
+                exchange = PaperExchange(mock_live_exchange, paper_exchange_config)
+                await exchange.initialize()
+                from triangular_arbitrage.exchanges.base_adapter import OrderSide
+                tasks = []
+                for i in range(10):
+                    task = exchange.create_market_order("BTC/USDT", OrderSide.BUY, 0.001)
+                    tasks.append(task)
+                return await asyncio.gather(*tasks)
+            return asyncio.run(place_batch_orders())
 
         # Benchmark batch execution
-        results = benchmark(asyncio.run, place_batch_orders())
+        results = benchmark(sync_place_batch_orders)
         assert len(results) == 10
         assert all(r.status in ["filled", "partial"] for r in results)
 
@@ -95,7 +97,8 @@ class TestPerformanceBenchmarks:
     @pytest.mark.benchmark(group="metrics")
     def test_metrics_concurrent_updates(self, benchmark):
         """Benchmark concurrent metrics updates"""
-        metrics = TradingMetrics()
+        from prometheus_client import CollectorRegistry
+        metrics = TradingMetrics(CollectorRegistry())
 
         import threading
 
@@ -132,30 +135,30 @@ class TestPerformanceBenchmarks:
             return exchange
 
         # Benchmark backtest initialization
-        exchange = benchmark(asyncio.run, initialize_backtest())
+        exchange = benchmark.pedantic(initialize_backtest, rounds=5, iterations=1)
         assert exchange is not None
 
     @pytest.mark.benchmark(group="backtest")
-    @pytest.mark.asyncio
-    async def test_backtest_order_simulation_speed(self, benchmark):
+    def test_backtest_order_simulation_speed(self, benchmark):
         """Benchmark backtest order simulation"""
-        config = {
-            "execution_mode": "backtest",
-            "data_file": "data/backtests/sample_feed.csv",
-            "random_seed": 42,
-            "initial_balances": {"BTC": 1.0, "USDT": 50000.0},
-        }
+        import asyncio
 
-        exchange = BacktestExchange(config)
-        await exchange.initialize()
-
-        from triangular_arbitrage.exchanges.base_adapter import OrderSide
-
-        async def simulate_order():
-            return await exchange.create_market_order("BTC/USDT", OrderSide.BUY, 0.01)
+        def sync_simulate_order():
+            async def simulate_order():
+                config = {
+                    "execution_mode": "backtest",
+                    "data_file": "data/backtests/sample_feed.csv",
+                    "random_seed": 42,
+                    "initial_balances": {"BTC": 1.0, "USDT": 50000.0},
+                }
+                exchange = BacktestExchange(config)
+                await exchange.initialize()
+                from triangular_arbitrage.exchanges.base_adapter import OrderSide
+                return await exchange.create_market_order("BTC/USDT", OrderSide.BUY, 0.01)
+            return asyncio.run(simulate_order())
 
         # Benchmark single order simulation
-        result = benchmark(asyncio.run, simulate_order())
+        result = benchmark(sync_simulate_order)
         assert result.status in ["filled", "partial", "failed"]
 
     @pytest.mark.benchmark(group="calculation", min_rounds=5)
@@ -196,12 +199,13 @@ class TestPerformanceBenchmarks:
         """Monitor memory usage during operations"""
         import psutil
         import os
+        from prometheus_client import CollectorRegistry
 
         process = psutil.Process(os.getpid())
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
 
         def memory_intensive_operation():
-            metrics = TradingMetrics()
+            metrics = TradingMetrics(CollectorRegistry())
 
             # Create many metric updates
             for i in range(1000):
@@ -227,7 +231,8 @@ class TestPerformanceBenchmarks:
     @pytest.mark.benchmark(group="scaling")
     def test_metrics_label_scaling(self, benchmark):
         """Test performance with high cardinality metrics"""
-        metrics = TradingMetrics()
+        from prometheus_client import CollectorRegistry
+        metrics = TradingMetrics(CollectorRegistry())
 
         def high_cardinality_updates():
             # Simulate many different label combinations
@@ -246,27 +251,27 @@ class TestPerformanceBenchmarks:
 class TestIntegrationBenchmarks:
     """End-to-end performance tests"""
 
-    @pytest.mark.asyncio
-    async def test_complete_cycle_simulation_speed(
+    def test_complete_cycle_simulation_speed(
         self, benchmark, mock_live_exchange, paper_exchange_config
     ):
         """Benchmark complete arbitrage cycle simulation"""
-        exchange = PaperExchange(mock_live_exchange, paper_exchange_config)
-        await exchange.initialize()
+        import asyncio
 
-        from triangular_arbitrage.exchanges.base_adapter import OrderSide
-
-        async def simulate_arbitrage_cycle():
-            # Simulate 3-leg arbitrage cycle
-            order1 = await exchange.create_market_order("BTC/USDT", OrderSide.SELL, 0.1)
-            order2 = await exchange.create_market_order(
-                "ETH/USDT", OrderSide.BUY, 200.0
-            )
-            order3 = await exchange.create_market_order("ETH/BTC", OrderSide.SELL, 4.0)
-
-            return [order1, order2, order3]
+        def sync_simulate_arbitrage_cycle():
+            async def simulate_arbitrage_cycle():
+                exchange = PaperExchange(mock_live_exchange, paper_exchange_config)
+                await exchange.initialize()
+                from triangular_arbitrage.exchanges.base_adapter import OrderSide
+                # Simulate 3-leg arbitrage cycle
+                order1 = await exchange.create_market_order("BTC/USDT", OrderSide.SELL, 0.1)
+                order2 = await exchange.create_market_order(
+                    "ETH/USDT", OrderSide.BUY, 200.0
+                )
+                order3 = await exchange.create_market_order("ETH/BTC", OrderSide.SELL, 4.0)
+                return [order1, order2, order3]
+            return asyncio.run(simulate_arbitrage_cycle())
 
         # Benchmark complete cycle
-        results = benchmark(asyncio.run, simulate_arbitrage_cycle())
+        results = benchmark(sync_simulate_arbitrage_cycle)
         assert len(results) == 3
         assert all(r.status in ["filled", "partial"] for r in results)
