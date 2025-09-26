@@ -105,16 +105,27 @@ def _normalize_execution_config(config_dict: Dict[str, Any]) -> ExecutionConfig:
     # Handle legacy keys and aliases
     mode = exec_config.get("mode", exec_config.get("execution_mode", "live"))
 
-    # Apply mode-specific defaults
-    defaults = {}
-    if mode == "paper":
-        defaults = {
-            "paper_balance_btc": 1.0,
-            "paper_balance_eth": 10.0,
-            "paper_balance_usdt": 10000.0,
-        }
-    elif mode == "backtest":
-        defaults = {
+    # Extract values from nested paper config or use defaults
+    paper_balance_btc = 1.0
+    paper_balance_eth = 10.0
+    paper_balance_usdt = 10000.0
+
+    if mode == "paper" and "paper" in exec_config:
+        paper_config = exec_config["paper"]
+        initial_balances = paper_config.get("initial_balances", {})
+        paper_balance_btc = initial_balances.get("BTC", 1.0)
+        paper_balance_eth = initial_balances.get("ETH", 10.0)
+        paper_balance_usdt = initial_balances.get("USDT", 10000.0)
+    elif mode == "paper":
+        # Legacy format - values already extracted during normalization
+        paper_balance_btc = exec_config.get("paper_balance_btc", 1.0)
+        paper_balance_eth = exec_config.get("paper_balance_eth", 10.0)
+        paper_balance_usdt = exec_config.get("paper_balance_usdt", 10000.0)
+
+    # Apply backtest defaults
+    backtest_defaults = {}
+    if mode == "backtest":
+        backtest_defaults = {
             "backtest_start_date": "2024-01-01",
             "backtest_end_date": "2024-01-31",
             "backtest_data_dir": "backtests/data",
@@ -122,30 +133,25 @@ def _normalize_execution_config(config_dict: Dict[str, Any]) -> ExecutionConfig:
 
     return ExecutionConfig(
         mode=mode,
-        paper_balance_btc=exec_config.get(
-            "paper_balance_btc", defaults.get("paper_balance_btc", 1.0)
-        ),
-        paper_balance_eth=exec_config.get(
-            "paper_balance_eth", defaults.get("paper_balance_eth", 10.0)
-        ),
-        paper_balance_usdt=exec_config.get(
-            "paper_balance_usdt", defaults.get("paper_balance_usdt", 10000.0)
-        ),
+        paper_balance_btc=paper_balance_btc,
+        paper_balance_eth=paper_balance_eth,
+        paper_balance_usdt=paper_balance_usdt,
         backtest_start_date=exec_config.get(
-            "backtest_start_date", defaults.get("backtest_start_date")
+            "backtest_start_date", backtest_defaults.get("backtest_start_date")
         ),
         backtest_end_date=exec_config.get(
-            "backtest_end_date", defaults.get("backtest_end_date")
+            "backtest_end_date", backtest_defaults.get("backtest_end_date")
         ),
         backtest_data_dir=exec_config.get(
-            "backtest_data_dir", defaults.get("backtest_data_dir")
+            "backtest_data_dir", backtest_defaults.get("backtest_data_dir")
         ),
     )
 
 
 def _normalize_risk_config(config_dict: Dict[str, Any]) -> RiskConfig:
     """Normalize risk configuration with defaults."""
-    risk_config = config_dict.get("risk", {})
+    # After normalization, risk data is in 'risk_controls'
+    risk_config = config_dict.get("risk_controls", {})
 
     return RiskConfig(
         max_position_size=risk_config.get("max_position_size", 0.1),
@@ -176,20 +182,109 @@ def _normalize_exchange_config(config_dict: Dict[str, Any]) -> ExchangeConfig:
     if not exchange_name:
         raise ConfigurationError("Exchange name is required")
 
-    # Handle legacy exchange config format
-    if isinstance(exchange_name, str):
-        return ExchangeConfig(name=exchange_name)
-    elif isinstance(exchange_name, dict):
+    # Check if we have stored exchange dict from normalization
+    exchange_dict = config_dict.get("_exchange_dict")
+
+    if exchange_dict:
+        # Use the full dictionary data
         return ExchangeConfig(
-            name=exchange_name.get("name", "binance"),
-            api_key=exchange_name.get("api_key"),
-            secret_key=exchange_name.get("secret_key"),
-            testnet=exchange_name.get("testnet", True),
-            rate_limit=exchange_name.get("rate_limit", 10),
-            timeout=exchange_name.get("timeout", 30),
+            name=exchange_dict.get("name", "binance"),
+            api_key=exchange_dict.get("api_key"),
+            secret_key=exchange_dict.get("secret_key"),
+            testnet=exchange_dict.get("testnet", True),
+            rate_limit=exchange_dict.get("rate_limit", 10),
+            timeout=exchange_dict.get("timeout", 30),
         )
+    elif isinstance(exchange_name, str):
+        # Simple string format
+        return ExchangeConfig(name=exchange_name)
     else:
         raise ConfigurationError(f"Invalid exchange configuration: {exchange_name}")
+
+
+def _normalize_legacy_fields(config_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize legacy field names to match current schema.
+
+    Args:
+        config_dict: Raw configuration dictionary
+
+    Returns:
+        Normalized configuration dictionary
+    """
+    config = config_dict.copy()
+
+    # Convert fees from legacy format
+    if "fees" in config and isinstance(config["fees"], dict):
+        fees = config["fees"]
+        if "maker" in fees and "maker_bps" not in fees:
+            # Convert decimal fees to basis points
+            config["fees"]["maker_bps"] = fees["maker"] * 10000
+            config["fees"].pop("maker", None)
+        if "taker" in fees and "taker_bps" not in fees:
+            # Convert decimal fees to basis points
+            config["fees"]["taker_bps"] = fees["taker"] * 10000
+            config["fees"].pop("taker", None)
+
+    # Handle risk config normalization - convert legacy 'risk' to 'risk_controls'
+    if "risk" in config:
+        if "risk_controls" not in config:
+            config["risk_controls"] = config.pop("risk")
+        else:
+            # Merge risk fields into risk_controls
+            risk_data = config.pop("risk")
+            config["risk_controls"].update(risk_data)
+
+    # Add missing required fields with defaults
+    if "risk_controls" in config:
+        risk = config["risk_controls"]
+        if "max_open_cycles" not in risk:
+            risk["max_open_cycles"] = 3
+
+    if "order" in config:
+        order = config["order"]
+        if "type" not in order:
+            order["type"] = "market"
+        if "allow_partial_fills" not in order:
+            order["allow_partial_fills"] = True
+        if "max_retries" not in order:
+            order["max_retries"] = 3
+        if "retry_delay_ms" not in order:
+            order["retry_delay_ms"] = 1000
+
+    # Handle execution config normalization
+    if "execution" in config:
+        execution = config["execution"]
+        if execution.get("mode") == "paper" and "paper" not in execution:
+            # Convert legacy paper config format to nested format
+            paper_config = {
+                "fee_bps": execution.get("fee_bps", 30.0),
+                "fill_ratio": execution.get("fill_ratio", 0.95),
+                "initial_balances": {}
+            }
+
+            # Convert legacy balance fields
+            if "paper_balance_btc" in execution:
+                paper_config["initial_balances"]["BTC"] = execution.pop("paper_balance_btc")
+            if "paper_balance_eth" in execution:
+                paper_config["initial_balances"]["ETH"] = execution.pop("paper_balance_eth")
+            if "paper_balance_usdt" in execution:
+                paper_config["initial_balances"]["USDT"] = execution.pop("paper_balance_usdt")
+
+            # Set default balances if none provided
+            if not paper_config["initial_balances"]:
+                paper_config["initial_balances"] = {"BTC": 1.0, "USDT": 50000.0}
+
+            execution["paper"] = paper_config
+
+    # Handle exchange config normalization - convert dict to string for validation
+    if "exchange" in config and isinstance(config["exchange"], dict):
+        # Store the full exchange config for later use in _normalize_exchange_config
+        config["_exchange_dict"] = config["exchange"]
+        # For validation, use just the exchange name
+        config["exchange"] = config["exchange"].get("name", "binance")
+
+    return config
 
 
 def load_strategy_config(config_path: Union[str, Path]) -> StrategyRuntimeConfig:
@@ -209,9 +304,14 @@ def load_strategy_config(config_path: Union[str, Path]) -> StrategyRuntimeConfig
     # Load raw YAML
     config_dict = load_yaml_config(config_path)
 
-    # Validate against schema first
+    # Normalize legacy field names
+    config_dict = _normalize_legacy_fields(config_dict)
+
+    # Validate against schema first (remove internal fields)
+    validation_dict = config_dict.copy()
+    validation_dict.pop("_exchange_dict", None)  # Remove internal storage field
     try:
-        validate_strategy_config(config_dict)
+        validate_strategy_config(validation_dict)
     except Exception as e:
         raise ValidationError(f"Configuration validation failed: {e}")
 

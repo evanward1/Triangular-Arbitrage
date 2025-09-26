@@ -72,7 +72,7 @@ class PaperExchange(ExchangeAdapter):
         super().__init__(config)
         self.live_exchange = live_exchange
         self._markets = None
-        self._balances = config.get("initial_balances", {})
+        self._balances = config.get("initial_balances", {}).copy()
         self._orders: Dict[str, PaperOrderState] = {}
 
         # Configuration
@@ -505,22 +505,20 @@ class PaperExchange(ExchangeAdapter):
         base_currency, quote_currency = order_state.symbol.split("/")
 
         for fill in order_state.fills:
+            # Get current balances
+            current_base = self._balances.get(base_currency, 0.0)
+            current_quote = self._balances.get(quote_currency, 0.0)
+
             if order_state.side == OrderSide.BUY:
                 # Buying base currency with quote currency
-                self._balances[base_currency] = (
-                    self._balances.get(base_currency, 0.0) + fill.amount
-                )
-                self._balances[quote_currency] = self._balances.get(
-                    quote_currency, 0.0
-                ) - (fill.amount * fill.price + fill.fee)
+                # Add to base currency, subtract cost from quote currency
+                self._balances[base_currency] = current_base + fill.amount
+                self._balances[quote_currency] = current_quote - (fill.amount * fill.price + fill.fee)
             else:
                 # Selling base currency for quote currency
-                self._balances[base_currency] = (
-                    self._balances.get(base_currency, 0.0) - fill.amount
-                )
-                self._balances[quote_currency] = self._balances.get(
-                    quote_currency, 0.0
-                ) + (fill.amount * fill.price - fill.fee)
+                # Subtract from base currency, add proceeds to quote currency
+                self._balances[base_currency] = current_base - fill.amount
+                self._balances[quote_currency] = current_quote + (fill.amount * fill.price - fill.fee)
 
     def _update_metrics(self, order_state: PaperOrderState) -> None:
         """Update execution metrics"""

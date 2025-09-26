@@ -7,6 +7,9 @@ import asyncio
 import time
 from unittest.mock import Mock, patch
 from prometheus_client import CollectorRegistry, generate_latest
+import aiohttp
+import aiohttp.test_utils
+from aiohttp import web
 
 from triangular_arbitrage.metrics import TradingMetrics, get_metrics, initialize_metrics
 
@@ -177,6 +180,20 @@ class TestMetricsGlobal:
 
     def test_get_metrics_singleton(self):
         """Test global metrics singleton"""
+        # Reset global state to avoid registry conflicts
+        import triangular_arbitrage.metrics as metrics_module
+        from prometheus_client import REGISTRY, CollectorRegistry
+
+        # Clear any existing metrics from the default registry
+        for collector in list(REGISTRY._collector_to_names.keys()):
+            try:
+                REGISTRY.unregister(collector)
+            except (KeyError, ValueError):
+                pass
+
+        # Reset global metrics instance
+        metrics_module._global_metrics = None
+
         metrics1 = get_metrics()
         metrics2 = get_metrics()
 
@@ -206,7 +223,7 @@ async def test_metrics_server_endpoints():
     app.router.add_get("/metrics", metrics._metrics_handler)
     app.router.add_get("/health", metrics._health_handler)
 
-    async with aiohttp.test_utils.TestClient(app) as client:
+    async with aiohttp.test_utils.TestClient(aiohttp.test_utils.TestServer(app)) as client:
         # Test metrics endpoint
         resp = await client.get("/metrics")
         assert resp.status == 200
@@ -236,12 +253,13 @@ def test_metric_labels():
     # Find the cycles_started metric
     cycles_metric = None
     for family in metric_families:
-        if family.name == "triangular_arbitrage_cycles_started_total":
+        if family.name == "triangular_arbitrage_cycles_started":
             cycles_metric = family
             break
 
     assert cycles_metric is not None
-    assert len(cycles_metric.samples) == 3  # Should have 3 different label combinations
+    # Counter creates both _total and _created samples, so 3 label combinations = 6 samples
+    assert len(cycles_metric.samples) == 6  # 3 different label combinations × 2 sample types
 
 
 def test_metric_values():

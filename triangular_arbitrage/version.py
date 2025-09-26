@@ -1,6 +1,6 @@
 """Version information for triangular arbitrage system."""
 
-__version__ = "0.2.0"
+__version__ = "1.3.0"
 __version_info__ = tuple(int(i) for i in __version__.split("."))
 
 # Version metadata

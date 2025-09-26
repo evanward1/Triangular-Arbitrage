@@ -181,6 +181,7 @@ class RiskControlsConfig(BaseModel):
     slippage_cooldown_seconds: Optional[int] = Field(ge=0, le=86400, default=0)
     enable_latency_checks: Optional[bool] = True
     enable_slippage_checks: Optional[bool] = True
+    enable_kill_switch: Optional[bool] = Field(default=True, description="Enable emergency kill switch")
     max_position_size: Optional[float] = Field(ge=0, default=None)
     daily_loss_limit: Optional[float] = Field(ge=0, default=None)
 
