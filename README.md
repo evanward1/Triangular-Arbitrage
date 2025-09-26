@@ -18,7 +18,7 @@ This system provides a lightning-fast, professional-grade arbitrage engine that:
 - **⚡ Lightning Execution**: Executes profitable trades IMMEDIATELY when found (no ranking delays that kill opportunities)
 - **🔍 Massive Coverage**: Scans 1,920+ triangular arbitrage combinations from 329 currencies across major exchanges
 - **💰 Smart Profit Hunting**: Executes ALL profitable opportunities, not just the "best" one
-- **🛡️ Risk Management**: Comprehensive controls including profit thresholds, position limits, and automatic loss prevention
+- **🛡️ Advanced Risk Management**: Comprehensive controls including latency safeguards, slippage protection with cooldowns, profit thresholds, position limits, and automatic loss prevention
 - **🚀 Native API Integration**: Direct Coinbase Advanced Trading API support with proper credential handling
 
 ## Unique Value Proposition
@@ -83,6 +83,9 @@ python run_strategy.py --strategy configs/strategies/strategy_1.yaml --dry-run -
 # Live trading: Execute up to 5 profitable opportunities
 python run_strategy.py --strategy configs/strategies/strategy_1.yaml --cycles 5
 
+# Resume with persisted cooldowns from previous run
+python run_strategy.py --strategy configs/strategies/strategy_1.yaml --resume --cycles 5
+
 # Comprehensive scan: Test with 1,000+ cycles (use priority file for speed)
 python run_strategy.py --strategy configs/strategies/strategy_massive.yaml --dry-run --cycles 20
 ```
@@ -110,13 +113,17 @@ name: lightning_arbitrage
 exchange: coinbase
 trading_pairs_file: data/cycles/coinbase_cycles_priority.csv  # 500 high-liquidity cycles
 min_profit_bps: 7        # Execute trades with ≥0.07% profit
-max_slippage_bps: 9      # Maximum acceptable slippage
+max_slippage_bps: 9      # Maximum acceptable slippage per leg
+max_leg_latency_ms: 264  # Maximum acceptable latency per leg (milliseconds)
 capital_allocation:
   mode: fixed_fraction
   fraction: 0.6          # Use 60% of available balance per trade
 risk_controls:
   max_open_cycles: 3     # Max concurrent positions
   stop_after_consecutive_losses: 4
+  slippage_cooldown_seconds: 300  # Cooldown period after slippage violations
+  enable_latency_checks: true     # Enable latency safeguards
+  enable_slippage_checks: true    # Enable slippage protection
 ```
 
 **Cycle File Options:**
@@ -124,8 +131,9 @@ risk_controls:
 - `coinbase_cycles_massive.csv` - 1,000 diverse cycles (comprehensive coverage)
 - `coinbase_cycles_complete.csv` - All 1,920 cycles (maximum opportunities)
 
-### Monitoring
+### Monitoring & Operator Controls
 
+#### Basic Monitoring
 Monitor active trading cycles and system status:
 
 ```bash
@@ -138,8 +146,109 @@ python monitor_cycles.py --history 20
 # Examine specific cycle details
 python monitor_cycles.py --details cycle_id_here
 
+# View risk statistics (stop rates, PnL, latencies, duplicate suppression, heartbeats)
+python monitor_cycles.py --stats
+
+# View risk control violations (latency/slippage)
+python monitor_cycles.py --risk-stats 24  # Last 24 hours
+
+# View active cooldowns with remaining time
+python monitor_cycles.py --cooldowns
+
+# View recently suppressed duplicate events
+python monitor_cycles.py --suppressed 10  # Last 10 suppressed events
+
+# View suppression summary metrics
+python monitor_cycles.py --suppression-summary 300  # Last 300 seconds (5 minutes)
+
+# Clear a specific cooldown (with confirmation)
+python monitor_cycles.py --clear-cooldown "BTC->ETH->USDT"
+
+# Extend a cooldown by N seconds
+python monitor_cycles.py --extend-cooldown "BTC->ETH->USDT" 60
+
+# Shorten a cooldown by N seconds
+python monitor_cycles.py --shorten-cooldown "BTC->ETH->USDT" 30
+
+# Clear all active cooldowns (with confirmation)
+python monitor_cycles.py --clear-all-cooldowns
+
 # Clean up old records
 python monitor_cycles.py --cleanup 7
+```
+
+#### Circuit Breaker Controls
+Manage automatic safety mechanisms:
+
+```bash
+# Check current circuit breaker status
+python monitor_cycles.py breaker status
+
+# Manually pause trading for 5 minutes (default)
+python monitor_cycles.py breaker pause
+
+# Pause trading for custom duration (e.g., 10 minutes)
+python monitor_cycles.py breaker pause --seconds 600
+
+# Resume trading after manual pause
+python monitor_cycles.py breaker resume
+```
+
+#### Cooldown Management
+Clear trading pair cooldowns when market stabilizes:
+
+```bash
+# View all active cooldowns
+python monitor_cycles.py cooldown status
+
+# Clear cooldown for specific trading pair
+python monitor_cycles.py cooldown clear BTC
+
+# Clear all active cooldowns
+python monitor_cycles.py cooldown clear-all
+```
+
+#### Operational Snapshot & Health Check
+
+Capture current risk state or run health checks for CI/CD:
+
+```bash
+# Create snapshot (JSON + MD) with current risk state
+python monitor_cycles.py snapshot
+python monitor_cycles.py snapshot --out-dir logs/ops --recent 10 --window 300
+
+# Health check with exit code (0=OK, 1=FAIL)
+python monitor_cycles.py health
+python monitor_cycles.py health --window 300 --max-suppression-rate 90
+```
+
+**Snapshot includes:**
+- System metadata (hostname, Python version, platform)
+- Current config (max_slippage_bps, max_leg_latency_ms, etc.)
+- Active cooldowns
+- Suppression summary (last N seconds)
+- Recent suppressed events
+
+**Use cases:**
+- Support ticket artifact (attach snapshot files)
+- CI/CD health probe (check exit code)
+- On-call checklist (quick system state review)
+- Pre/post-deployment comparison
+
+#### System Heartbeat
+Monitor system health through automatic heartbeat events:
+
+The system sends periodic heartbeat events to confirm it's alive and processing, especially useful when no trades occur for extended periods:
+
+- **Purpose**: Confirm system is running even during quiet periods
+- **Frequency**: Configurable via `risk_logging.heartbeat_interval_seconds` (default: 60 seconds, 0 to disable)
+- **Monitoring**: View heartbeat count in `python monitor_cycles.py --stats`
+- **Logs**: Heartbeat events appear in JSON logs with `event_type: "heartbeat"`
+
+Configure heartbeat interval in your strategy YAML:
+```yaml
+risk_logging:
+  heartbeat_interval_seconds: 60  # Send heartbeat every 60 seconds (0 to disable)
 ```
 
 ### Safe Testing
@@ -183,6 +292,50 @@ python run_strategy.py --strategy configs/strategies/new_strategy.yaml --dry-run
 - **Progress Tracking**: Live scanning progress with profitable opportunity counts
 - **Comprehensive Audit Trail**: Complete history of all trades and decisions
 - **Debug Capabilities**: Detailed execution logging for optimization and troubleshooting
+
+### 🔍 Audit & Postmortem Analysis
+
+- **Configuration Tracking**: Every run saves a config snapshot with SHA256 hash
+- **Incident Replay**: Analyze past incidents with counterfactual "what-if" scenarios
+- **Daily Risk Reports**: Generate comprehensive reports with statistics and trends
+- **Full Traceability**: Link any event back to its exact configuration
+- **Duplicate Event Suppression**: Automatically prevents spam from identical risk events within configurable time windows (default: 2 seconds)
+
+#### Generate Risk Reports
+```bash
+# Daily risk report
+python monitor_cycles.py report today
+
+# Historical report
+python monitor_cycles.py report 2024-01-15
+```
+
+#### Replay Incidents
+```bash
+# Analyze recent incidents with different thresholds
+python tools/replay_incidents.py --start 1h --slippage-grid 15,20,25,30
+```
+
+### ⚡ Performance & Resilience Testing
+
+- **Performance Budgets**: Enforce maximum decision latency with automatic cycle skipping
+- **Quote Freshness Guards**: Reject cycles based on stale market data timestamps
+- **Chaos Testing**: Inject controlled failures in paper/backtest modes for resilience testing
+- **Canary Rollouts**: Test new guardrail values on a percentage of traffic before full deployment
+
+#### Generate Guardrail Suggestions
+```bash
+# Analyze recent data and suggest optimal thresholds
+python tools/suggest_guardrails.py --hours 24
+```
+
+#### Enable Chaos Testing (Paper Mode Only)
+```yaml
+chaos:
+  enable: true
+  reject_rate_pct: 10.0
+  latency_spike_ms: 1000
+```
 
 ## Command Reference
 
