@@ -59,6 +59,11 @@ async def main():
         help='Recover and complete any active cycles before starting new ones'
     )
     parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Resume with persisted cooldown state from previous run'
+    )
+    parser.add_argument(
         '--cycles',
         type=int,
         default=1,
@@ -146,6 +151,14 @@ async def main():
 
         # Initialize async components
         await engine.initialize()
+
+        # Load cooldown state if resuming
+        if args.resume and engine.risk_control_manager:
+            restored = engine.risk_control_manager.load_cooldowns()
+            if restored > 0:
+                logger.info(f"✓ Resumed with {restored} active cooldowns from previous run")
+            else:
+                logger.info("No active cooldowns to resume")
 
         # Handle recovery if requested
         if args.recover:
@@ -262,6 +275,13 @@ async def main():
         # Cleanup old cycle records (older than 7 days)
         state_manager = StateManager()
         state_manager.cleanup_old_cycles(days=7)
+
+        # Save cooldown state for resume
+        if engine.risk_control_manager:
+            try:
+                engine.risk_control_manager.save_cooldowns()
+            except Exception as e:
+                logger.warning(f"Failed to save cooldown state: {e}")
 
     except Exception as e:
         logger.error(f"Execution failed: {e}", exc_info=True)

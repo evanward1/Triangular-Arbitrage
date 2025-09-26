@@ -16,12 +16,18 @@ from contextlib import asynccontextmanager
 from collections import deque
 import threading
 
-# Import enhanced recovery manager if available
 try:
     from .enhanced_recovery_manager import EnhancedFailureRecoveryManager
     ENHANCED_RECOVERY_AVAILABLE = True
 except ImportError:
     ENHANCED_RECOVERY_AVAILABLE = False
+
+try:
+    from .risk_controls import RiskControlManager
+    RISK_CONTROLS_AVAILABLE = True
+except ImportError:
+    RISK_CONTROLS_AVAILABLE = False
+    logger.warning("Risk controls module not available")
 
 logger = logging.getLogger(__name__)
 
@@ -1029,6 +1035,16 @@ class ConfigurationManager:
             'max_slippage_bps': 100
         })
 
+        config.setdefault('risk_controls', config.get('risk_controls', {})).setdefault(
+            'slippage_cooldown_seconds', 300
+        )
+        config.setdefault('risk_controls', config.get('risk_controls', {})).setdefault(
+            'enable_latency_checks', True
+        )
+        config.setdefault('risk_controls', config.get('risk_controls', {})).setdefault(
+            'enable_slippage_checks', True
+        )
+
         self.strategies[config['name']] = config
         return config
 
@@ -1483,6 +1499,34 @@ class StrategyExecutionEngine:
         self.state_manager = state_manager or StateManager()
         self.order_manager = OrderManager(exchange, strategy_config)
 
+        self.max_leg_latency_ms = strategy_config.get('max_leg_latency_ms')
+        self.max_slippage_bps = strategy_config.get('max_slippage_bps', 20)
+        self.enable_risk_controls = RISK_CONTROLS_AVAILABLE and (
+            self.max_leg_latency_ms is not None or
+            strategy_config.get('risk_controls', {}).get('enable_slippage_checks', True)
+        )
+
+        if self.enable_risk_controls:
+            slippage_cooldown = strategy_config.get('risk_controls', {}).get(
+                'slippage_cooldown_seconds', 300
+            )
+            duplicate_suppression_window = strategy_config.get('risk_controls', {}).get(
+                'duplicate_suppression_window_seconds', 2.0
+            )
+            self.risk_control_manager = RiskControlManager(
+                max_leg_latency_ms=self.max_leg_latency_ms or 5000,
+                max_slippage_bps=self.max_slippage_bps,
+                slippage_cooldown_seconds=slippage_cooldown,
+                duplicate_suppression_window=duplicate_suppression_window
+            )
+            logger.info(
+                f"Risk controls enabled: latency={self.max_leg_latency_ms}ms, "
+                f"slippage={self.max_slippage_bps}bps, cooldown={slippage_cooldown}s"
+            )
+        else:
+            self.risk_control_manager = None
+            logger.info("Risk controls disabled")
+
         # Use enhanced recovery manager if available and configured
         use_enhanced = strategy_config.get('panic_sell', {}).get('use_enhanced_routing', True)
         if ENHANCED_RECOVERY_AVAILABLE and use_enhanced:
@@ -1742,6 +1786,19 @@ class StrategyExecutionEngine:
 
     async def _execute_cycle_trades(self, cycle_info: CycleInfo) -> bool:
         """Execute all trades in a cycle"""
+        if self.risk_control_manager:
+            self.risk_control_manager.reset_cycle_measurements()
+
+        cycle_key = cycle_info.cycle
+        if self.risk_control_manager and self.risk_control_manager.is_cycle_in_cooldown(cycle_key):
+            cooldown_remaining = self.risk_control_manager.get_cycle_cooldown_remaining(cycle_key)
+            cycle_info.error_message = (
+                f"Cycle in cooldown due to previous slippage violation. "
+                f"Remaining: {cooldown_remaining:.1f}s"
+            )
+            logger.warning(cycle_info.error_message)
+            return False
+
         trade_path = cycle_info.cycle + [cycle_info.cycle[0]]
         markets = await self.exchange.load_markets()
 
@@ -1772,8 +1829,14 @@ class StrategyExecutionEngine:
                 )
                 return False
 
-            # Place and monitor order
             try:
+                leg_start_time = None
+                if self.risk_control_manager and self.max_leg_latency_ms:
+                    leg_start_time = self.risk_control_manager.start_leg_timing()
+
+                ticker = await self.exchange.fetch_ticker(market_symbol)
+                expected_price = ticker['ask'] if order_side == 'buy' else ticker['bid']
+
                 order_info = await self.order_manager.place_order(
                     market_symbol,
                     order_side,
@@ -1783,20 +1846,42 @@ class StrategyExecutionEngine:
                 cycle_info.orders.append(order_info)
                 await self.state_manager.save_cycle(cycle_info)
 
-                # Monitor order completion
                 order_info = await self.order_manager.monitor_order(
                     order_info,
                     timeout=30.0
                 )
 
+                if self.risk_control_manager and leg_start_time:
+                    latency_measurement, latency_violated = self.risk_control_manager.end_leg_timing(
+                        i, market_symbol, leg_start_time, order_side
+                    )
+
+                    if latency_violated:
+                        self.risk_control_manager.log_latency_violation(
+                            cycle_info.id,
+                            cycle_info.strategy_name,
+                            cycle_info.cycle,
+                            "->" if order_side == 'buy' else "<-",
+                            latency_measurement,
+                            self.risk_control_manager.latency_monitor.get_all_measurements()
+                        )
+                        cycle_info.error_message = (
+                            f"Latency violation: leg {i+1} took {latency_measurement.latency_ms:.2f}ms "
+                            f"(max: {self.max_leg_latency_ms}ms)"
+                        )
+                        cycle_info.metadata['latency_violation'] = {
+                            'leg': i,
+                            'latency_ms': latency_measurement.latency_ms,
+                            'max_allowed_ms': self.max_leg_latency_ms
+                        }
+                        return False
+
                 if order_info.state != OrderState.FILLED:
                     if order_info.state == OrderState.PARTIALLY_FILLED:
-                        # Handle partial fill if allowed
                         if self.config['order'].get('allow_partial_fills', False):
                             if order_side == 'buy':
                                 cycle_info.current_amount = order_info.filled_amount
                             else:
-                                # For sell, the cost is what we received
                                 cycle_info.current_amount = (
                                     order_info.filled_amount * order_info.average_price
                                 )
@@ -1811,13 +1896,42 @@ class StrategyExecutionEngine:
                         cycle_info.error_message = f"Order failed: {order_info.error_message}"
                         return False
                 else:
-                    # Update amount based on actual fill
                     if order_side == 'buy':
                         cycle_info.current_amount = order_info.filled_amount
                     else:
                         cycle_info.current_amount = (
                             order_info.filled_amount * order_info.average_price
                         )
+
+                if self.risk_control_manager and order_info.average_price > 0:
+                    slippage_measurement, slippage_violated = self.risk_control_manager.track_slippage(
+                        i,
+                        market_symbol,
+                        expected_price,
+                        order_info.average_price,
+                        order_side
+                    )
+
+                    if slippage_violated:
+                        self.risk_control_manager.log_slippage_violation(
+                            cycle_info.id,
+                            cycle_info.strategy_name,
+                            cycle_info.cycle,
+                            "->" if order_side == 'buy' else "<-",
+                            slippage_measurement,
+                            self.risk_control_manager.slippage_tracker.get_all_measurements()
+                        )
+                        cycle_info.error_message = (
+                            f"Slippage violation: leg {i+1} had {slippage_measurement.slippage_bps:.2f} bps "
+                            f"(max: {self.max_slippage_bps} bps). Cycle in cooldown."
+                        )
+                        cycle_info.metadata['slippage_violation'] = {
+                            'leg': i,
+                            'slippage_bps': slippage_measurement.slippage_bps,
+                            'max_allowed_bps': self.max_slippage_bps,
+                            'cooldown_seconds': self.risk_control_manager.slippage_tracker.cooldown_seconds
+                        }
+                        return False
 
                 # Update cycle state
                 cycle_info.current_currency = to_currency

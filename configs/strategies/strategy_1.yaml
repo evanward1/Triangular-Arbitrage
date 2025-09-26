@@ -10,6 +10,10 @@ capital_allocation:
 risk_controls:
   max_open_cycles: 3
   stop_after_consecutive_losses: 4
+  slippage_cooldown_seconds: 300
+  enable_latency_checks: true
+  enable_slippage_checks: true
+  duplicate_suppression_window_seconds: 2.0
 fees:
   taker_bps: 9
   maker_bps: 4

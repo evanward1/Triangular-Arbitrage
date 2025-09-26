@@ -9,6 +9,10 @@ Usage:
 import argparse
 import json
 import sqlite3
+import sys
+import os
+import platform
+import socket
 from datetime import datetime
 from pathlib import Path
 from tabulate import tabulate
@@ -18,6 +22,12 @@ from triangular_arbitrage.execution_engine import (
     CycleState,
     OrderState
 )
+
+try:
+    from triangular_arbitrage.risk_controls import RiskControlManager
+    RISK_CONTROLS_AVAILABLE = True
+except ImportError:
+    RISK_CONTROLS_AVAILABLE = False
 
 
 def format_timestamp(ts):
@@ -226,6 +236,445 @@ def cleanup_database(days=7):
     print(f"Cleaned up cycles older than {days} days")
 
 
+def show_risk_stats(time_window_hours=24):
+    """Display risk control statistics"""
+    if not RISK_CONTROLS_AVAILABLE:
+        print("Risk controls module not available.")
+        return
+
+    risk_manager = RiskControlManager(
+        max_leg_latency_ms=1000,
+        max_slippage_bps=20
+    )
+
+    stats = risk_manager.get_stats(time_window_seconds=time_window_hours * 3600)
+
+    print(f"\n=== RISK CONTROL STATISTICS (Last {time_window_hours}h) ===\n")
+
+    print(f"Total Violations: {stats['violations']['total_violations']}")
+    print(f"Active Cooldowns: {stats['active_cooldowns']}\n")
+
+    if stats['violations']['by_type']:
+        print("Violations by Type:")
+        for vtype, count in stats['violations']['by_type'].items():
+            print(f"  {vtype}: {count}")
+        print()
+
+    if stats['violations']['by_strategy']:
+        print("Violations by Strategy:")
+        for strategy, count in stats['violations']['by_strategy'].items():
+            print(f"  {strategy}: {count}")
+        print()
+
+    if stats['violations']['by_cycle']:
+        print("Top Violating Cycles:")
+        sorted_cycles = sorted(
+            stats['violations']['by_cycle'].items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:10]
+        for cycle, count in sorted_cycles:
+            print(f"  {cycle}: {count}")
+        print()
+
+    print("Configuration:")
+    for key, value in stats['config'].items():
+        print(f"  {key}: {value}")
+
+    if 'suppression' in stats:
+        print("\nDuplicate Suppression:")
+        print(f"  Total Duplicates Suppressed: {stats['suppression']['total_duplicates_suppressed']}")
+        print(f"  Cache Size: {stats['suppression']['cache_size']}")
+        print(f"  Suppression Window: {stats['suppression']['suppression_window_seconds']}s")
+
+
+def show_cooldowns():
+    """Display active cooldowns"""
+    if not RISK_CONTROLS_AVAILABLE:
+        print("Risk controls module not available.")
+        return
+
+    risk_manager = RiskControlManager(
+        max_leg_latency_ms=1000,
+        max_slippage_bps=20
+    )
+
+    risk_manager.load_cooldowns()
+
+    active_cooldowns = risk_manager.get_active_cooldowns()
+
+    print("\n=== ACTIVE COOLDOWNS ===\n")
+
+    if not active_cooldowns:
+        print("✓ No active cooldowns - all trading pairs are available")
+        print()
+        return
+
+    table_data = []
+    for cycle_key, remaining_seconds in active_cooldowns:
+        minutes = int(remaining_seconds // 60)
+        seconds = int(remaining_seconds % 60)
+        time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+        table_data.append([cycle_key, time_str])
+
+    print(tabulate(
+        table_data,
+        headers=['Cycle', 'Remaining'],
+        tablefmt='grid'
+    ))
+    print(f"\nTotal: {len(active_cooldowns)} cycle(s) in cooldown\n")
+
+
+def clear_cooldown(pair):
+    """Clear a specific cooldown with confirmation"""
+    if not RISK_CONTROLS_AVAILABLE:
+        print("Risk controls module not available.")
+        return
+
+    risk_manager = RiskControlManager(
+        max_leg_latency_ms=1000,
+        max_slippage_bps=20
+    )
+
+    risk_manager.load_cooldowns()
+
+    if pair not in risk_manager.slippage_tracker.cooldown_cycles:
+        print(f"Cooldown not found for {pair}")
+        return
+
+    response = input(f"Confirm clear cooldown for {pair}? [y/N]: ").strip().lower()
+
+    if response == 'y':
+        success = risk_manager.clear_cooldown(pair)
+        if success:
+            print(f"Cleared cooldown for {pair}")
+        else:
+            print(f"Failed to clear cooldown for {pair}")
+    else:
+        print("Canceled")
+
+    show_cooldowns()
+
+
+def format_time(seconds):
+    """Format seconds as Xm Ys or Xs"""
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    if minutes > 0:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def extend_cooldown(pair, seconds):
+    """Extend or shorten a cooldown by N seconds with confirmation"""
+    if not RISK_CONTROLS_AVAILABLE:
+        print("Risk controls module not available.")
+        return
+
+    risk_manager = RiskControlManager(
+        max_leg_latency_ms=1000,
+        max_slippage_bps=20
+    )
+
+    risk_manager.load_cooldowns()
+
+    if pair not in risk_manager.slippage_tracker.cooldown_cycles:
+        print(f"Cooldown not found for {pair}")
+        return
+
+    current_remaining = risk_manager.get_cycle_cooldown_remaining([p for p in pair.split('->')])
+    new_remaining = max(current_remaining + seconds, 1.0)
+
+    sign = '+' if seconds >= 0 else ''
+    print(f"Current remaining: {format_time(current_remaining)}")
+    print(f"Proposed new remaining: {format_time(new_remaining)}")
+
+    response = input(f"Confirm adjust cooldown for {pair} by {sign}{seconds}s? [y/N]: ").strip().lower()
+
+    if response == 'y':
+        success = risk_manager.extend_cooldown(pair, seconds)
+        if success:
+            final_remaining = risk_manager.get_cycle_cooldown_remaining([p for p in pair.split('->')])
+            print(f"Adjusted cooldown for {pair} → New remaining: {format_time(final_remaining)}")
+        else:
+            print(f"Failed to adjust cooldown for {pair}")
+    else:
+        print("Canceled")
+
+    show_cooldowns()
+
+
+def clear_all_cooldowns():
+    """Clear all active cooldowns with confirmation"""
+    if not RISK_CONTROLS_AVAILABLE:
+        print("Risk controls module not available.")
+        return
+
+    risk_manager = RiskControlManager(
+        max_leg_latency_ms=1000,
+        max_slippage_bps=20
+    )
+
+    risk_manager.load_cooldowns()
+
+    active_count = len(risk_manager.slippage_tracker.cooldown_cycles)
+
+    if active_count == 0:
+        print("No active cooldowns to clear")
+        return
+
+    response = input(f"Confirm clear ALL cooldowns ({active_count} total)? [y/N]: ").strip().lower()
+
+    if response == 'y':
+        cleared_count = risk_manager.clear_all_cooldowns()
+        print(f"Cleared {cleared_count} cooldowns")
+    else:
+        print("Canceled")
+
+    show_cooldowns()
+
+
+def show_suppressed(limit=10):
+    """Display recently suppressed duplicate events"""
+    if not RISK_CONTROLS_AVAILABLE:
+        print("Risk controls module not available.")
+        return
+
+    risk_manager = RiskControlManager(
+        max_leg_latency_ms=1000,
+        max_slippage_bps=20
+    )
+
+    suppressed = risk_manager.logger.get_recent_suppressed(limit)
+
+    print(f"\n=== RECENTLY SUPPRESSED DUPLICATES (Last {limit}) ===\n")
+
+    if not suppressed:
+        print("No suppressed duplicates recorded")
+        print()
+        return
+
+    table_data = []
+    for event in suppressed:
+        cycle_id = event['cycle_id'][:20] + '...' if len(event['cycle_id']) > 22 else event['cycle_id']
+        first_seen = datetime.fromtimestamp(event['first_seen']).strftime('%H:%M:%S')
+        last_seen = datetime.fromtimestamp(event['last_seen']).strftime('%H:%M:%S')
+
+        table_data.append([
+            cycle_id,
+            event['stop_reason'],
+            event['duplicate_count'],
+            first_seen,
+            last_seen
+        ])
+
+    print(tabulate(
+        table_data,
+        headers=['Cycle ID', 'Reason', 'Count', 'First Seen', 'Last Seen'],
+        tablefmt='grid'
+    ))
+    print(f"\nTotal suppressed events shown: {len(suppressed)}\n")
+
+
+def snapshot_ops(out_dir="logs/ops", recent=10, window=300):
+    """Capture current risk state snapshot"""
+    if not RISK_CONTROLS_AVAILABLE:
+        print("Risk controls module not available.")
+        return
+
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_file = out_path / f"ops_snapshot_{timestamp_str}.json"
+    md_file = out_path / f"ops_snapshot_{timestamp_str}.md"
+
+    risk_manager = RiskControlManager(
+        max_leg_latency_ms=1000,
+        max_slippage_bps=20
+    )
+    risk_manager.load_cooldowns()
+
+    snapshot = {
+        'metadata': {
+            'timestamp': datetime.now().isoformat(),
+            'hostname': socket.gethostname(),
+            'python_version': platform.python_version(),
+            'platform': platform.platform()
+        },
+        'config': {
+            'max_slippage_bps': 20,
+            'max_leg_latency_ms': 1000,
+            'duplicate_suppression_window_seconds': risk_manager.logger.suppression_window
+        },
+        'active_cooldowns': [],
+        'suppression_summary': {},
+        'recent_suppressed': []
+    }
+
+    active_cooldowns = risk_manager.get_active_cooldowns()
+    for cycle_key, remaining in active_cooldowns:
+        snapshot['active_cooldowns'].append({
+            'pair': cycle_key,
+            'seconds_remaining': round(remaining, 2)
+        })
+
+    summary = risk_manager.logger.get_suppression_summary(window_seconds=window)
+    snapshot['suppression_summary'] = summary
+
+    recent_suppressed = risk_manager.logger.get_recent_suppressed(limit=recent)
+    for event in recent_suppressed:
+        snapshot['recent_suppressed'].append({
+            'cycle_id': event['cycle_id'],
+            'stop_reason': event['stop_reason'],
+            'duplicate_count': event['duplicate_count'],
+            'first_seen': datetime.fromtimestamp(event['first_seen']).isoformat(),
+            'last_seen': datetime.fromtimestamp(event['last_seen']).isoformat()
+        })
+
+    with open(json_file, 'w') as f:
+        json.dump(snapshot, f, indent=2)
+
+    with open(md_file, 'w') as f:
+        f.write(f"# Operations Snapshot\n\n")
+        f.write(f"**Generated:** {snapshot['metadata']['timestamp']}  \n")
+        f.write(f"**Hostname:** {snapshot['metadata']['hostname']}  \n")
+        f.write(f"**Python:** {snapshot['metadata']['python_version']}  \n")
+        f.write(f"**Platform:** {snapshot['metadata']['platform']}  \n\n")
+
+        f.write(f"## Configuration\n\n")
+        f.write(f"| Parameter | Value |\n")
+        f.write(f"|-----------|-------|\n")
+        for key, value in snapshot['config'].items():
+            f.write(f"| {key} | {value} |\n")
+        f.write(f"\n")
+
+        f.write(f"## Active Cooldowns\n\n")
+        if snapshot['active_cooldowns']:
+            f.write(f"| Pair | Remaining (s) |\n")
+            f.write(f"|------|---------------|\n")
+            for cd in snapshot['active_cooldowns']:
+                f.write(f"| {cd['pair']} | {cd['seconds_remaining']} |\n")
+        else:
+            f.write(f"✓ No active cooldowns\n")
+        f.write(f"\n")
+
+        f.write(f"## Suppression Summary (Last {window}s)\n\n")
+        s = snapshot['suppression_summary']
+        f.write(f"- **Total Suppressed:** {s['total_suppressed']}\n")
+        f.write(f"- **Unique Pairs:** {s['unique_pairs']}\n")
+        f.write(f"- **Suppression Rate:** {s['suppression_rate']:.2f}%\n\n")
+        if s['top_pairs']:
+            f.write(f"### Top Offenders\n\n")
+            f.write(f"| Cycle ID | Reason | Count |\n")
+            f.write(f"|----------|--------|-------|\n")
+            for pair in s['top_pairs']:
+                f.write(f"| {pair['cycle_id']} | {pair['stop_reason']} | {pair['count']} |\n")
+            f.write(f"\n")
+
+        f.write(f"## Recent Suppressed Events (Last {recent})\n\n")
+        if snapshot['recent_suppressed']:
+            f.write(f"| Cycle ID | Reason | Count | First Seen | Last Seen |\n")
+            f.write(f"|----------|--------|-------|------------|----------|\n")
+            for event in snapshot['recent_suppressed']:
+                f.write(f"| {event['cycle_id']} | {event['stop_reason']} | {event['duplicate_count']} | {event['first_seen']} | {event['last_seen']} |\n")
+        else:
+            f.write(f"✓ No recent suppressed events\n")
+
+    print(f"\nSnapshot saved:")
+    print(f"  JSON: {json_file}")
+    print(f"  MD:   {md_file}\n")
+
+
+def health_check(window=300, max_suppression_rate=95):
+    """Health check with exit code"""
+    if not RISK_CONTROLS_AVAILABLE:
+        print("FAIL: Risk controls module not available")
+        return 1
+
+    try:
+        log_dir = Path("logs/ops")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        test_file = log_dir / ".health_check_test"
+        test_file.write_text("test")
+        test_file.unlink()
+    except Exception as e:
+        print(f"FAIL: Logs directory not writable: {e}")
+        return 1
+
+    risk_manager = RiskControlManager(
+        max_leg_latency_ms=1000,
+        max_slippage_bps=20
+    )
+
+    try:
+        risk_manager.load_cooldowns()
+    except Exception as e:
+        print(f"FAIL: Cooldown state file error: {e}")
+        return 1
+
+    active_cooldowns = risk_manager.get_active_cooldowns()
+    for cycle_key, remaining in active_cooldowns:
+        if remaining < 0:
+            print(f"FAIL: Negative remaining time for {cycle_key}: {remaining}s")
+            return 1
+
+    summary = risk_manager.logger.get_suppression_summary(window_seconds=window)
+    if summary['suppression_rate'] > max_suppression_rate:
+        print(f"FAIL: Suppression rate {summary['suppression_rate']:.2f}% exceeds threshold {max_suppression_rate}%")
+        return 1
+
+    print("OK")
+    return 0
+
+
+def show_suppression_summary(window_seconds=300):
+    """Display suppression summary metrics"""
+    if not RISK_CONTROLS_AVAILABLE:
+        print("Risk controls module not available.")
+        return
+
+    risk_manager = RiskControlManager(
+        max_leg_latency_ms=1000,
+        max_slippage_bps=20
+    )
+
+    summary = risk_manager.logger.get_suppression_summary(window_seconds)
+
+    minutes = window_seconds // 60
+    window_display = f"{minutes}m" if minutes > 0 else f"{window_seconds}s"
+
+    print(f"\n=== SUPPRESSION SUMMARY (Last {window_display}) ===\n")
+
+    if summary['total_suppressed'] == 0:
+        print(f"No suppressed duplicates in last {window_seconds} seconds")
+        print()
+        return
+
+    print(f"Total Suppressed: {summary['total_suppressed']}")
+    print(f"Unique Pairs: {summary['unique_pairs']}")
+    print(f"Suppression Rate: {summary['suppression_rate']:.2f}%")
+
+    if summary['top_pairs']:
+        print("\nTop Offenders:")
+        table_data = []
+        for pair in summary['top_pairs']:
+            cycle_id = pair['cycle_id'][:30] + '...' if len(pair['cycle_id']) > 32 else pair['cycle_id']
+            table_data.append([
+                cycle_id,
+                pair['stop_reason'],
+                pair['count']
+            ])
+
+        print(tabulate(
+            table_data,
+            headers=['Cycle ID', 'Reason', 'Count'],
+            tablefmt='grid'
+        ))
+
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(description='Monitor trading cycles')
     parser.add_argument(
@@ -252,8 +701,97 @@ def main():
         const=7,
         help='Clean up old cycles (default: 7 days)'
     )
+    parser.add_argument(
+        '--risk-stats',
+        type=int,
+        nargs='?',
+        const=24,
+        help='Show risk control statistics (default: last 24 hours)'
+    )
+    parser.add_argument(
+        '--cooldowns',
+        action='store_true',
+        help='Show active cooldown pairs and remaining time'
+    )
+    parser.add_argument(
+        '--clear-cooldown',
+        type=str,
+        metavar='PAIR',
+        help='Clear cooldown for specific pair (e.g., BTC->ETH->USDT)'
+    )
+    parser.add_argument(
+        '--extend-cooldown',
+        nargs=2,
+        metavar=('PAIR', 'SECONDS'),
+        help='Extend cooldown by N seconds (e.g., BTC->ETH->USDT 60)'
+    )
+    parser.add_argument(
+        '--shorten-cooldown',
+        nargs=2,
+        metavar=('PAIR', 'SECONDS'),
+        help='Shorten cooldown by N seconds (e.g., BTC->ETH->USDT 30)'
+    )
+    parser.add_argument(
+        '--clear-all-cooldowns',
+        action='store_true',
+        help='Clear all active cooldowns (with confirmation)'
+    )
+    parser.add_argument(
+        '--suppressed',
+        type=int,
+        nargs='?',
+        const=10,
+        metavar='N',
+        help='Show recently suppressed duplicate events (default: last 10)'
+    )
+    parser.add_argument(
+        '--suppression-summary',
+        type=int,
+        nargs='?',
+        const=300,
+        metavar='WINDOW',
+        help='Show suppression summary metrics (default: last 300 seconds)'
+    )
+    parser.add_argument(
+        'subcommand',
+        nargs='?',
+        choices=['snapshot', 'health'],
+        help='Subcommand: snapshot or health'
+    )
+    parser.add_argument(
+        '--out-dir',
+        type=str,
+        default='logs/ops',
+        help='Output directory for snapshot (default: logs/ops)'
+    )
+    parser.add_argument(
+        '--recent',
+        type=int,
+        default=10,
+        help='Number of recent suppressed events for snapshot (default: 10)'
+    )
+    parser.add_argument(
+        '--window',
+        type=int,
+        default=300,
+        help='Time window in seconds for summary/health (default: 300)'
+    )
+    parser.add_argument(
+        '--max-suppression-rate',
+        type=float,
+        default=95.0,
+        help='Max suppression rate threshold for health check (default: 95)'
+    )
 
     args = parser.parse_args()
+
+    if args.subcommand == 'snapshot':
+        snapshot_ops(out_dir=args.out_dir, recent=args.recent, window=args.window)
+        return
+
+    if args.subcommand == 'health':
+        exit_code = health_check(window=args.window, max_suppression_rate=args.max_suppression_rate)
+        sys.exit(exit_code)
 
     # Default to showing active cycles if no args
     if not any(vars(args).values()):
@@ -270,6 +808,32 @@ def main():
 
     if args.cleanup:
         cleanup_database(args.cleanup)
+
+    if args.risk_stats:
+        show_risk_stats(args.risk_stats)
+
+    if args.cooldowns:
+        show_cooldowns()
+
+    if args.clear_cooldown:
+        clear_cooldown(args.clear_cooldown)
+
+    if args.extend_cooldown:
+        pair, seconds = args.extend_cooldown
+        extend_cooldown(pair, int(seconds))
+
+    if args.shorten_cooldown:
+        pair, seconds = args.shorten_cooldown
+        extend_cooldown(pair, -int(seconds))
+
+    if args.clear_all_cooldowns:
+        clear_all_cooldowns()
+
+    if args.suppressed is not None:
+        show_suppressed(args.suppressed)
+
+    if args.suppression_summary is not None:
+        show_suppression_summary(args.suppression_summary)
 
 
 if __name__ == "__main__":
