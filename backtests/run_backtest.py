@@ -27,6 +27,9 @@ from triangular_arbitrage.execution_engine import (
 )
 from triangular_arbitrage.exchanges import BacktestExchange
 
+# Set up logger
+logger = logging.getLogger(__name__)
+
 
 class BacktestRunner:
     """
