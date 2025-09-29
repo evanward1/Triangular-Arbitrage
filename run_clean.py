@@ -5,11 +5,8 @@ Just run: python run_clean.py
 """
 
 import os
-import queue
 import sqlite3
 import subprocess
-import sys
-import threading
 import time
 
 from dotenv import load_dotenv
@@ -23,7 +20,7 @@ def clear_database():
         conn.commit()
         conn.close()
         print("🧹 Database cleared")
-    except:
+    except Exception:
         pass
 
 
@@ -134,15 +131,16 @@ def run_arbitrage():
                 if cycle_name not in started_cycles:
                     cycles_executed += 1
                     started_cycles.add(cycle_name)
-                    # Extract trading pair and amount from line like "Step 1: Trading USD -> AXS, Amount: 5108.423398499925"
+                    # Extract trading pair and amount
                     if " -> " in line and "Amount:" in line:
                         trading_part = (
                             line.split("Step 1: Trading")[1].split(",")[0].strip()
                         )
                         amount_part = line.split("Amount:")[1].strip()
                         print(f"💰 STARTING CYCLE: {cycle_name}")
+                        amount_value = float(amount_part)
                         print(
-                            f"   🔄 First trade: {trading_part} (${float(amount_part):,.2f})"
+                            f"   🔄 First trade: {trading_part} (${amount_value:,.2f})"
                         )
                     else:
                         print(f"💰 STARTING CYCLE: {cycle_name}")
@@ -216,9 +214,10 @@ def run_arbitrage():
                                     print(f"✅ COMPLETED: {completed_cycle}")
                                 pending_completions.clear()
 
-                                print(f"💰 REAL BALANCE UPDATE:")
+                                print("💰 REAL BALANCE UPDATE:")
                                 print(
-                                    f"   📊 Before: ${current_balance:,.2f} → After: ${new_balance:,.2f}"
+                                    f"   📊 Before: ${current_balance:,.2f} → "
+                                    f"After: ${new_balance:,.2f}"
                                 )
                                 print(f"   💵 Real Profit/Loss: ${profit:+,.2f}")
 
@@ -283,10 +282,11 @@ def run_arbitrage():
                 print(f"   ⏰ Analysis duration: {interval_count * 30} seconds")
 
                 # Session metrics
-                print(f"\n💼 Session Performance:")
+                print("\n💼 Session Performance:")
                 print(f"   📈 Total P&L: ${total_profit:+,.2f}")
                 print(
-                    f"   🎯 Win rate: {win_rate:.1f}% ({successful_trades}W/{failed_trades}L)"
+                    f"   🎯 Win rate: {win_rate:.1f}% "
+                    f"({successful_trades}W/{failed_trades}L)"
                 )
                 print(f"   🔥 Largest gain: ${largest_profit:+,.2f}")
                 if largest_loss < 0:
@@ -311,7 +311,7 @@ def run_arbitrage():
                 break
 
         process.wait()
-        print(f"\n✨ Scan complete!")
+        print("\n✨ Scan complete!")
 
     except KeyboardInterrupt:
         print("\n🛑 Stopped by user")
