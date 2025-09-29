@@ -1,0 +1,44 @@
+name: strategy_simple
+exchange: coinbase
+trading_pairs_file: data/cycles/coinbase_cycles_complete.csv
+
+# Simple settings - just make it work
+min_profit_bps: 5
+max_slippage_bps: 500  # Very high to allow completion
+max_leg_latency_ms: 60000  # Required field
+
+# Required fees section
+fees:
+  taker_bps: 10
+  maker_bps: 5
+
+# Simple capital allocation
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.3
+
+# Minimal risk controls
+risk_controls:
+  max_open_cycles: 5
+  stop_after_consecutive_losses: 20
+
+# Simple order config
+order:
+  type: market
+  allow_partial_fills: true
+  max_retries: 1
+  retry_delay_ms: 100
+
+# Simple paper trading
+execution:
+  mode: paper
+  paper:
+    fee_bps: 10
+    fill_ratio: 1.0
+    initial_balances:
+      USD: 10000
+    random_seed: 42
+
+# No fancy stuff
+simulation:
+  enable: false

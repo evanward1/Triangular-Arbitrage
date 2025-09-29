@@ -1,0 +1,57 @@
+name: strategy_massive
+exchange: coinbase
+trading_pairs_file: data/cycles/coinbase_cycles_complete.csv
+
+# Aggressive profit targeting for high-volume execution
+min_profit_bps: 2
+max_slippage_bps: 100
+max_leg_latency_ms: 2000
+
+# Massive capital deployment
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.95
+
+# Risk controls for massive execution
+risk_controls:
+  max_open_cycles: 100
+  stop_after_consecutive_losses: 5
+  slippage_cooldown_seconds: 60
+  enable_latency_checks: true
+  enable_slippage_checks: true
+
+# Exchange fees
+fees:
+  taker_bps: 9
+  maker_bps: 4
+
+# Order configuration for high-throughput
+order:
+  type: market
+  allow_partial_fills: true
+  max_retries: 5
+  retry_delay_ms: 50
+  monitoring:
+    initial_delay_ms: 50
+    max_delay_ms: 3000
+    backoff_multiplier: 1.8
+
+# Execution mode configuration
+execution:
+  mode: paper
+  paper:
+    fee_bps: 9
+    fill_ratio: 0.95
+    initial_balances:
+      USD: 100000
+      BTC: 10
+      ETH: 100
+      USDC: 100000
+      USDT: 100000
+    random_seed: 42
+
+# Simulation settings
+simulation:
+  enable: true
+  book_depth_levels: 10
+  latency_ms: 100

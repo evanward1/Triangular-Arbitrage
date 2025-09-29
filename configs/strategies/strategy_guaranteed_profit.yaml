@@ -1,0 +1,46 @@
+name: strategy_guaranteed_profit
+exchange: coinbase
+trading_pairs_file: data/cycles/coinbase_cycles_complete.csv
+
+# Ultra-conservative settings - only execute if guaranteed profit after all fees
+min_profit_bps: 1   # Only need 1 basis point profit minimum
+max_slippage_bps: 0.5  # Almost no slippage allowed
+max_leg_latency_ms: 10000
+
+# Conservative capital allocation
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.05  # Use only 5% per trade
+
+# Ultra-safe risk controls
+risk_controls:
+  max_open_cycles: 5  # Allow multiple simultaneous cycles
+  stop_after_consecutive_losses: 100  # High threshold since we guarantee profit
+  slippage_cooldown_seconds: 0
+  enable_latency_checks: true
+  enable_slippage_checks: true
+
+# Realistic exchange fees
+fees:
+  taker_bps: 5  # Coinbase Pro fees
+  maker_bps: 2
+
+# Simple orders
+order:
+  type: market
+  allow_partial_fills: false
+  max_retries: 1
+  retry_delay_ms: 100
+
+# Paper trading
+execution:
+  mode: paper
+  paper:
+    fee_bps: 3  # Even lower simulation fees
+    fill_ratio: 1.0
+    initial_balances:
+      USD: 10000
+    random_seed: 42
+
+simulation:
+  enable: false

@@ -1,33 +1,38 @@
-name: strategy_1
+name: strategy_clean
 exchange: coinbase
 trading_pairs_file: data/cycles/coinbase_cycles_complete.csv
+
+# Same profitable settings but with cleaner output
 min_profit_bps: 1
 max_slippage_bps: 50
 max_leg_latency_ms: 1000
+
 capital_allocation:
   mode: fixed_fraction
   fraction: 0.6
+
 risk_controls:
-  max_open_cycles: 100
-  stop_after_consecutive_losses: 3
-  slippage_cooldown_seconds: 300
+  max_open_cycles: 5
+  stop_after_consecutive_losses: 10
+  slippage_cooldown_seconds: 60
   enable_latency_checks: true
   enable_slippage_checks: true
-  duplicate_suppression_window_seconds: 2.0
+
 fees:
   taker_bps: 9
   maker_bps: 4
+
 order:
   type: market
   allow_partial_fills: false
   max_retries: 3
   retry_delay_ms: 100
-# Execution mode configuration
+
 execution:
   mode: paper
   paper:
     fee_bps: 9
-    fill_ratio: 0.98  # 98% fill rate (realistic)
+    fill_ratio: 0.98
     initial_balances:
       USD: 10000
     random_seed: 42

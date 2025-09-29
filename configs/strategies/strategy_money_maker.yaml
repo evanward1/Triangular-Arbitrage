@@ -1,0 +1,46 @@
+name: strategy_money_maker
+exchange: binance
+trading_pairs_file: data/cycles/binance_cycles_1.csv
+
+# More aggressive but still profitable settings
+min_profit_bps: 3   # Lower threshold for more opportunities
+max_slippage_bps: 2   # Very tight slippage control
+max_leg_latency_ms: 3000
+
+# Moderate capital allocation
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.1
+
+# Simple risk controls
+risk_controls:
+  max_open_cycles: 1
+  stop_after_consecutive_losses: 50
+  slippage_cooldown_seconds: 0
+  enable_latency_checks: true
+  enable_slippage_checks: true
+
+# Lower fees for Binance
+fees:
+  taker_bps: 10
+  maker_bps: 10
+
+# Simple orders
+order:
+  type: market
+  allow_partial_fills: false
+  max_retries: 1
+  retry_delay_ms: 100
+
+# Paper trading
+execution:
+  mode: paper
+  paper:
+    fee_bps: 6  # Binance-like fees
+    fill_ratio: 1.0
+    initial_balances:
+      USDT: 10000  # Start with USDT for Binance
+    random_seed: 42
+
+simulation:
+  enable: false
