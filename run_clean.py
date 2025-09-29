@@ -63,7 +63,8 @@ def run_arbitrage():
             print("✅ API keys configured")
             print()
             confirmation = input(
-                "⚠️  Are you absolutely sure you want to proceed with LIVE trading? Type 'YES': "
+                "⚠️  Are you absolutely sure you want to proceed with LIVE "
+                "trading? Type 'YES': "
             )
             if confirmation != "YES":
                 print("❌ Trading cancelled for safety")
@@ -189,7 +190,7 @@ def run_arbitrage():
 
             # Track real balance updates from the system
             elif "Current balances:" in line:
-                # Extract balance from line like "Current balances: [('USD', 6384.04388069319)]"
+                # Extract balance from line
                 try:
                     balance_part = line.split("Current balances:")[1].strip()
 
@@ -232,8 +233,8 @@ def run_arbitrage():
 
                                 current_balance = new_balance
                     else:
-                        # Balance is in other currencies - cycles didn't complete properly
-                        # Clear pending completions without showing them
+                        # Balance is in other currencies - incomplete
+                        # Clear pending completions
                         pending_completions.clear()
 
                 except Exception as e:

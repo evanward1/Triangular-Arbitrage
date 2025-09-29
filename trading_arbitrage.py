@@ -9,8 +9,7 @@ import logging
 import os
 import platform
 import time
-from decimal import ROUND_DOWN, Decimal
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import ccxt
 import networkx as nx
@@ -76,7 +75,8 @@ class RealTriangularArbitrage:
                 raise ValueError(f"Unsupported exchange: {self.exchange_name}")
 
             logger.info(
-                f"🔑 Exchange {self.exchange_name} configured in {self.trading_mode} mode"
+                f"🔑 Exchange {self.exchange_name} configured in "
+                f"{self.trading_mode} mode"
             )
 
         except Exception as e:
@@ -95,9 +95,10 @@ class RealTriangularArbitrage:
                 }
 
             self.balances = await self.exchange.fetch_balance()
-            logger.info(
-                f"💰 Current balances: {len([k for k, v in self.balances.items() if v.get('total', 0) > 0])} currencies"
+            currency_count = len(
+                [k for k, v in self.balances.items() if v.get("total", 0) > 0]
             )
+            logger.info(f"💰 Current balances: {currency_count} currencies")
             return self.balances
 
         except Exception as e:
@@ -149,7 +150,6 @@ class RealTriangularArbitrage:
 
         start_balance = amount
         current_amount = amount
-        current_currency = cycle[0]
         trades = []
 
         try:
@@ -179,7 +179,6 @@ class RealTriangularArbitrage:
                 # Update amount for next trade (subtract fees)
                 fee = trade.get("fee", current_amount * 0.001)
                 current_amount = trade.get("amount", current_amount) - fee
-                current_currency = to_currency
 
                 # Small delay between trades
                 await asyncio.sleep(0.5)
@@ -187,7 +186,7 @@ class RealTriangularArbitrage:
             profit = current_amount - start_balance
             profit_percent = (profit / start_balance) * 100
 
-            logger.info(f"✅ Cycle completed!")
+            logger.info("✅ Cycle completed!")
             logger.info(f"💰 Final amount: {current_amount:.6f}")
             logger.info(f"📈 Profit: {profit:+.6f} ({profit_percent:+.3f}%)")
 
@@ -261,7 +260,7 @@ class RealTriangularArbitrage:
                                         "profit_ratio": profit_ratio,
                                     }
                                 )
-                except:
+                except Exception:
                     continue
 
             # Sort by profitability

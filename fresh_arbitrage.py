@@ -9,7 +9,7 @@ Uses graph theory to find profitable cycles in cryptocurrency trading pairs.
 import asyncio
 import platform
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import ccxt
 import networkx as nx
@@ -98,9 +98,9 @@ class TriangularArbitrageDetector:
                     # Skip invalid symbols
                     continue
 
-        print(
-            f"📈 Graph built with {self.graph.number_of_nodes()} currencies and {self.graph.number_of_edges()} trading routes"
-        )
+        nodes = self.graph.number_of_nodes()
+        edges = self.graph.number_of_edges()
+        print(f"📈 Graph built with {nodes} currencies and {edges} trading routes")
 
     def find_arbitrage_opportunities(self, max_length: int = 4) -> List[Dict]:
         """Find profitable arbitrage cycles"""
@@ -188,7 +188,7 @@ class TriangularArbitrageDetector:
     def display_opportunities(
         self, opportunities: List[Dict], max_display: int = 3
     ) -> None:
-        """Execute arbitrage opportunities and show results in format run_clean.py expects"""
+        """Execute arbitrage opportunities and show results."""
         if not opportunities:
             print("😔 No profitable arbitrage opportunities found")
             return
@@ -206,10 +206,9 @@ class TriangularArbitrageDetector:
             print(f"Step 1: Trading {cycle[0]} -> {cycle[1]}, Amount: {investment}")
 
             # Simulate execution with realistic results
-            import random
-            import time
+            import time as time_module
 
-            time.sleep(2)  # Simulate execution time
+            time_module.sleep(2)  # Simulate execution time
 
             # Calculate realistic profit after fees
             theoretical_profit = opp["profit_percent"] / 100
@@ -262,9 +261,10 @@ class TriangularArbitrageDetector:
                 # Show execution time
                 execution_time = time.time() - start_time
                 print(
-                    f"\n⏱️  Cycle {cycle_count} execution time: {execution_time:.2f} seconds"
+                    f"\n⏱️  Cycle {cycle_count} execution time: "
+                    f"{execution_time:.2f} seconds"
                 )
-                print(f"🔄 Searching for more opportunities...\n")
+                print("🔄 Searching for more opportunities...\n")
 
                 # Wait before next cycle to avoid overwhelming the exchange
                 await asyncio.sleep(10)
@@ -277,7 +277,7 @@ class TriangularArbitrageDetector:
             # Close exchange connection
             try:
                 await self.exchange.close()
-            except:
+            except Exception:
                 pass
 
 
