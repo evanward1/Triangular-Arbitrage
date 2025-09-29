@@ -6,18 +6,18 @@ Uses live market data for price discovery but doesn't execute real trades.
 """
 
 import asyncio
+import logging
 import random
 import time
 import uuid
-from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
-import logging
+from typing import Any, Dict, List, Optional
 
 from .base_adapter import (
     ExchangeAdapter,
-    OrderResult,
     FillInfo,
     MarketData,
+    OrderResult,
     OrderSide,
     OrderType,
 )
@@ -140,16 +140,30 @@ class PaperExchange(ExchangeAdapter):
         return self._markets
 
     async def fetch_ticker(self, symbol: str) -> MarketData:
-        """Fetch live market data"""
-        ticker = await self.live_exchange.fetch_ticker(symbol)
-        return MarketData(
-            symbol=symbol,
-            bid=ticker["bid"],
-            ask=ticker["ask"],
-            last=ticker["last"],
-            volume=ticker["quoteVolume"],
-            timestamp=time.time(),
-        )
+        """Fetch live market data with timeout"""
+        import asyncio
+
+        try:
+            # Add timeout to prevent hanging
+            ticker = await asyncio.wait_for(
+                self.live_exchange.fetch_ticker(symbol), timeout=2.0  # 2 second timeout
+            )
+            return MarketData(
+                symbol=symbol,
+                bid=ticker["bid"],
+                ask=ticker["ask"],
+                last=ticker["last"],
+                volume=ticker["quoteVolume"],
+                timestamp=time.time(),
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Ticker fetch timeout for {symbol}, using synthetic data")
+            return self._generate_synthetic_ticker(symbol)
+        except Exception as e:
+            logger.warning(
+                f"Failed to fetch live ticker for {symbol}: {e}, using synthetic data"
+            )
+            return self._generate_synthetic_ticker(symbol)
 
     async def fetch_balance(self) -> Dict[str, float]:
         """Return simulated balances"""
@@ -177,7 +191,7 @@ class PaperExchange(ExchangeAdapter):
             await asyncio.sleep(self.latency_sim_ms / 1000.0)
 
         try:
-            # Get current market data
+            # Get market data (with timeout protection)
             market_data = await self.fetch_ticker(symbol)
 
             # Simulate market order execution
@@ -263,6 +277,22 @@ class PaperExchange(ExchangeAdapter):
                 status="failed",
                 error_message=str(e),
             )
+
+    async def create_market_buy_order(
+        self, symbol: str, amount: float, price: float = None
+    ) -> OrderResult:
+        """Create market buy order"""
+        return await self.create_market_order(symbol, OrderSide.BUY, amount)
+
+    async def create_market_sell_order(
+        self, symbol: str, amount: float, price: float = None
+    ) -> OrderResult:
+        """Create market sell order"""
+        return await self.create_market_order(symbol, OrderSide.SELL, amount)
+
+    async def fetch_order(self, order_id: str, symbol: str = None) -> OrderResult:
+        """Fetch order status (alias for fetch_order_status)"""
+        return await self.fetch_order_status(order_id, symbol or "")
 
     async def fetch_order_status(self, order_id: str, symbol: str) -> OrderResult:
         """Get current order status"""
@@ -361,6 +391,52 @@ class PaperExchange(ExchangeAdapter):
 
         # Return final order result
         return await self.fetch_order_status(order_state.order_id, order_state.symbol)
+
+    def _generate_synthetic_ticker(self, symbol: str) -> "MarketData":
+        """Generate synthetic market data to avoid hanging on live data"""
+        import random
+        import time
+
+        from triangular_arbitrage.market_data import MarketData
+
+        # Base prices for common pairs
+        base_prices = {
+            "BTC/USD": 50000.0,
+            "ETH/USD": 3000.0,
+            "XLM/USD": 0.12,
+            "DASH/USD": 35.0,
+            "MASK/USD": 2.8,
+            "COMP/USD": 55.0,
+            "USDT/USD": 1.0,
+            "USD/USDT": 1.0,
+            "BTC/USDT": 50000.0,
+            "ETH/BTC": 0.06,
+            "XLM/BTC": 0.0000024,
+            "XLM/USDT": 0.12,
+            "MASK/USDT": 2.8,
+            "DASH/BTC": 0.0007,
+        }
+
+        # Get base price with small random variation
+        base_price = base_prices.get(symbol, 1.0)
+        variation = random.uniform(-0.01, 0.01)  # ±1% variation
+        last_price = base_price * (1 + variation)
+
+        # Create spread (0.1% typical)
+        spread = last_price * 0.001
+        bid = last_price - spread / 2
+        ask = last_price + spread / 2
+
+        return MarketData(
+            symbol=symbol,
+            last=last_price,
+            bid=bid,
+            ask=ask,
+            high=last_price * 1.02,
+            low=last_price * 0.98,
+            volume=1000.0,
+            timestamp=int(time.time() * 1000),
+        )
 
     def _calculate_execution_price(
         self, base_price: float, side: OrderSide, amount: float, market_data: MarketData
@@ -513,12 +589,16 @@ class PaperExchange(ExchangeAdapter):
                 # Buying base currency with quote currency
                 # Add to base currency, subtract cost from quote currency
                 self._balances[base_currency] = current_base + fill.amount
-                self._balances[quote_currency] = current_quote - (fill.amount * fill.price + fill.fee)
+                self._balances[quote_currency] = current_quote - (
+                    fill.amount * fill.price + fill.fee
+                )
             else:
                 # Selling base currency for quote currency
                 # Subtract from base currency, add proceeds to quote currency
                 self._balances[base_currency] = current_base - fill.amount
-                self._balances[quote_currency] = current_quote + (fill.amount * fill.price - fill.fee)
+                self._balances[quote_currency] = current_quote + (
+                    fill.amount * fill.price - fill.fee
+                )
 
     def _update_metrics(self, order_state: PaperOrderState) -> None:
         """Update execution metrics"""

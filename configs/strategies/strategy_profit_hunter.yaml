@@ -1,0 +1,46 @@
+name: strategy_profit_hunter
+exchange: coinbase
+trading_pairs_file: data/cycles/coinbase_cycles_complete.csv
+
+# ULTRA AGGRESSIVE - find ANY profitable opportunity
+min_profit_bps: 0.1  # Just need 0.01% profit
+max_slippage_bps: 0.1  # Almost zero slippage
+max_leg_latency_ms: 30000  # Allow up to 30 seconds
+
+# Aggressive capital allocation
+capital_allocation:
+  mode: fixed_fraction
+  fraction: 0.5  # Use 50% of balance
+
+# Relaxed risk controls to allow more opportunities
+risk_controls:
+  max_open_cycles: 10  # Allow many concurrent cycles
+  stop_after_consecutive_losses: 100  # Never give up
+  slippage_cooldown_seconds: 0
+  enable_latency_checks: false  # Disable latency checks
+  enable_slippage_checks: true
+
+# Conservative fees
+fees:
+  taker_bps: 5
+  maker_bps: 2
+
+# Aggressive order settings
+order:
+  type: market
+  allow_partial_fills: true  # Accept partial fills
+  max_retries: 5
+  retry_delay_ms: 50
+
+# Paper trading with optimistic settings
+execution:
+  mode: paper
+  paper:
+    fee_bps: 1  # Ultra-low fees for simulation
+    fill_ratio: 1.0  # Perfect fills
+    initial_balances:
+      USD: 10000
+    random_seed: 42
+
+simulation:
+  enable: false
