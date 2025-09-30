@@ -205,11 +205,6 @@ class TriangularArbitrageDetector:
             print(f"Testing cycle: {cycle_name} Amount: {investment}")
             print(f"Step 1: Trading {cycle[0]} -> {cycle[1]}, Amount: {investment}")
 
-            # Simulate execution with realistic results
-            import time as time_module
-
-            time_module.sleep(2)  # Simulate execution time
-
             # Calculate realistic profit after fees
             theoretical_profit = opp["profit_percent"] / 100
             # Apply realistic constraints (fees, slippage)
@@ -226,9 +221,6 @@ class TriangularArbitrageDetector:
             print(f"Current balances: [('USD', {new_balance})]")
 
             balance = new_balance
-
-            if i < max_display - 1:
-                time.sleep(1)
 
     async def run_detection(self, max_opportunities: int = 10) -> None:
         """Run continuous arbitrage detection"""
