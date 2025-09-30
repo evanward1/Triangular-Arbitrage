@@ -137,3 +137,8 @@ cython_debug/
 .env.local
 
 .DS_Store
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
