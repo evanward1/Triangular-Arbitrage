@@ -32,11 +32,13 @@ class TriangularArbitrageDetector:
         self.symbols = []
         self.tickers = {}
         self.graph = nx.DiGraph()
+        self.balance = 100.0  # Track balance across cycles
 
-    async def fetch_data(self) -> bool:
+    async def fetch_data(self, verbose: bool = False) -> bool:
         """Fetch market data from exchange"""
         try:
-            print(f"🔄 Fetching data from {self.exchange_name}...")
+            if verbose:
+                print(f"🔄 Fetching data from {self.exchange_name}...", flush=True)
 
             # Load markets (some exchanges need async, some don't)
             try:
@@ -46,14 +48,12 @@ class TriangularArbitrageDetector:
 
             # Get all symbols
             self.symbols = list(self.exchange.markets.keys())
-            print(f"📊 Found {len(self.symbols)} trading pairs")
 
             # Fetch all tickers (some exchanges need async, some don't)
             try:
                 self.tickers = await self.exchange.fetch_tickers()
             except TypeError:
                 self.tickers = self.exchange.fetch_tickers()
-            print(f"💰 Retrieved {len(self.tickers)} ticker prices")
 
             return True
 
@@ -61,11 +61,25 @@ class TriangularArbitrageDetector:
             print(f"❌ Error fetching data: {e}")
             return False
 
-    def build_graph(self) -> None:
+    def build_graph(self, verbose: bool = False) -> None:
         """Build directed graph of currency pairs"""
-        print("🔨 Building currency graph...")
-
         self.graph.clear()
+
+        # Filter to only liquid pairs with major currencies
+        priority_currencies = {
+            "USD",
+            "EUR",
+            "USDT",
+            "USDC",
+            "BTC",
+            "ETH",
+            "ADA",
+            "DOGE",
+            "XRP",
+            "SOL",
+            "USDG",
+            "GBP",
+        }
 
         for symbol in self.symbols:
             if symbol in self.tickers:
@@ -78,6 +92,13 @@ class TriangularArbitrageDetector:
                 try:
                     # Parse symbol (e.g., 'BTC/USDT' -> base='BTC', quote='USDT')
                     base, quote = symbol.split("/")
+
+                    # Only include pairs where BOTH currencies are priority
+                    if (
+                        base not in priority_currencies
+                        or quote not in priority_currencies
+                    ):
+                        continue
 
                     # Add edges for both directions
                     # Buy: quote -> base (using ask price)
@@ -98,20 +119,15 @@ class TriangularArbitrageDetector:
                     # Skip invalid symbols
                     continue
 
-        nodes = self.graph.number_of_nodes()
-        edges = self.graph.number_of_edges()
-        print(f"📈 Graph built with {nodes} currencies and {edges} trading routes")
-
-    def find_arbitrage_opportunities(self, max_length: int = 4) -> List[Dict]:
-        """Find profitable arbitrage cycles"""
-        print("🔍 Searching for arbitrage opportunities...")
-
+    def find_arbitrage_opportunities(
+        self, max_length: int = 3, verbose: bool = False
+    ) -> List[Dict]:
+        """Find profitable arbitrage cycles (triangular only for speed)"""
         opportunities = []
 
-        # Find all simple cycles in the graph
+        # Find all simple cycles in the graph (limit to 3 for triangular arbitrage)
         try:
             cycles = list(nx.simple_cycles(self.graph, length_bound=max_length))
-            print(f"🔄 Found {len(cycles)} potential cycles")
 
             for cycle in cycles:
                 if (
@@ -193,17 +209,13 @@ class TriangularArbitrageDetector:
             print("😔 No profitable arbitrage opportunities found")
             return
 
-        # Execute top opportunities and show results in expected format
-        balance = 10000.0
-
+        # Use persistent balance
         for i, opp in enumerate(opportunities[:max_display]):
             cycle = opp["cycle"]
             cycle_name = " -> ".join(cycle + [cycle[0]])
 
             # Simulate starting the cycle
-            investment = min(1000.0, balance * 0.1)
-            print(f"Testing cycle: {cycle_name} Amount: {investment}")
-            print(f"Step 1: Trading {cycle[0]} -> {cycle[1]}, Amount: {investment}")
+            investment = min(1000.0, self.balance * 0.1)
 
             # Calculate realistic profit after fees
             theoretical_profit = opp["profit_percent"] / 100
@@ -213,16 +225,18 @@ class TriangularArbitrageDetector:
             )  # Much lower after real costs
             final_amount = investment * (1 + realistic_profit_rate)
 
-            # Show completion
-            print(f"✅ Cycle completed: {cycle_name}")
+            # Update balance
+            old_balance = self.balance
+            self.balance = self.balance - investment + final_amount
+            profit = self.balance - old_balance
 
-            # Update balance and show in expected format
-            new_balance = balance - investment + final_amount
-            print(f"Current balances: [('USD', {new_balance})]")
+            # Cleaner output
+            print(f"  Trade #{i+1}: {cycle_name}")
+            print(
+                f"  💵 Invested: ${investment:.2f} | Profit: ${profit:+.2f} | New Balance: ${self.balance:.2f}\n"
+            )
 
-            balance = new_balance
-
-    async def run_detection(self, max_opportunities: int = 10) -> None:
+    async def run_detection(self, max_opportunities: int = 2) -> None:
         """Run continuous arbitrage detection"""
         print("🚀 Starting Continuous Triangular Arbitrage Detection")
         print("=" * 50)
@@ -258,8 +272,8 @@ class TriangularArbitrageDetector:
                 )
                 print("🔄 Searching for more opportunities...\n")
 
-                # Wait before next cycle to avoid overwhelming the exchange
-                await asyncio.sleep(10)
+                # Wait before next cycle (shorter = fresher prices)
+                await asyncio.sleep(2)  # Reduced from 10s to 2s for fresher data
 
         except KeyboardInterrupt:
             print(f"\n🛑 Stopped by user after {cycle_count} cycles")
@@ -282,7 +296,9 @@ async def main():
         print(f"🔄 Trying {exchange_name}...")
         try:
             detector = TriangularArbitrageDetector(exchange_name)
-            await detector.run_detection(max_opportunities=10)
+            await detector.run_detection(
+                max_opportunities=2
+            )  # Only 2 to keep prices fresh
             break  # Success, exit loop
         except Exception as e:
             print(f"❌ {exchange_name} failed: {e}")
