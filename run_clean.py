@@ -7,11 +7,10 @@ Just run: python run_clean.py
 import asyncio
 import os
 import sqlite3
-import time
 
 from dotenv import load_dotenv
 
-from fresh_arbitrage import TriangularArbitrageDetector
+from trading_arbitrage import RealTriangularArbitrage
 
 
 def clear_database():
@@ -69,13 +68,22 @@ def run_arbitrage():
 
         print("✅ API keys configured")
         print()
-        confirmation = input(
-            "⚠️  Are you absolutely sure you want to proceed with LIVE "
-            "trading? Type 'YES': "
+
+        # Allow skipping confirmation with environment variable for testing
+        skip_confirmation = (
+            os.getenv("SKIP_LIVE_CONFIRMATION", "false").lower() == "true"
         )
-        if confirmation != "YES":
-            print("❌ Trading cancelled for safety")
-            return
+
+        if skip_confirmation:
+            print("⚠️  SKIP_LIVE_CONFIRMATION enabled - proceeding automatically")
+        else:
+            confirmation = input(
+                "⚠️  Are you absolutely sure you want to proceed with LIVE "
+                "trading? Type 'YES': "
+            )
+            if confirmation != "YES":
+                print("❌ Trading cancelled for safety")
+                return
     else:
         print("❌ Invalid choice. Please enter 1 or 2.")
         return
@@ -94,57 +102,88 @@ def run_arbitrage():
 
 async def run_arbitrage_direct(trading_mode):
     """Run arbitrage detection directly"""
-    exchanges_to_try = ["kraken", "coinbase", "bitfinex", "huobi"]
 
-    for exchange_name in exchanges_to_try:
-        print(f"🔄 Trying {exchange_name}...")
-        try:
-            detector = TriangularArbitrageDetector(exchange_name)
+    if trading_mode == "live":
+        # Use real trading system with API
+        exchanges_to_try = ["kraken", "coinbase", "binance"]
 
-            # Run continuously
-            cycle_count = 0
-            start_time = time.time()
+        for exchange_name in exchanges_to_try:
+            print(f"🔄 Trying {exchange_name}...")
+            try:
+                trader = RealTriangularArbitrage(exchange_name, trading_mode)
+                await trader.run_trading_session()
+                break
+            except Exception as e:
+                print(f"❌ {exchange_name} failed: {e}")
+                continue
+    else:
+        # Use paper trading with real trading code (for testing)
+        exchanges_to_try = ["kraken", "coinbase", "binance"]
 
-            while True:
-                cycle_count += 1
-                print(f"\n{'='*60}")
-                runtime = time.time() - start_time
-                print(
-                    f"⚡ CYCLE #{cycle_count} | Runtime: {runtime:.0f}s | "
-                    f"Balance: ${detector.balance:.2f}"
-                )
-                print("=" * 60)
+        for exchange_name in exchanges_to_try:
+            print(f"🔄 Trying {exchange_name}...")
+            try:
+                trader = RealTriangularArbitrage(exchange_name, trading_mode)
+                await trader.run_trading_session()
+                break
+            except Exception as e:
+                print(f"❌ {exchange_name} failed: {e}")
+                continue
 
-                # Fetch data
-                if not await detector.fetch_data():
-                    print("❌ Failed to fetch data, retrying...")
-                    await asyncio.sleep(5)
-                    continue
+        # Old simulator code (not used anymore)
+        """
+        exchanges_to_try = ["kraken", "coinbase", "bitfinex", "huobi"]
 
-                # Build graph
-                detector.build_graph()
+        for exchange_name in exchanges_to_try:
+            print(f"🔄 Trying {exchange_name}...")
+            try:
+                detector = TriangularArbitrageDetector(exchange_name)
 
-                # Find opportunities
-                opportunities = detector.find_arbitrage_opportunities()
+                # Run continuously
+                cycle_count = 0
+                start_time = time.time()
 
-                # Display top 2
-                if opportunities:
+                while True:
+                    cycle_count += 1
+                    print(f"\n{'='*60}")
+                    runtime = time.time() - start_time
                     print(
-                        f"✅ Found {len(opportunities)} opportunities | Executing top 2\n"
+                        f"⚡ CYCLE #{cycle_count} | Runtime: {runtime:.0f}s | "
+                        f"Balance: ${detector.balance:.2f}"
                     )
-                    detector.display_opportunities(opportunities, max_display=2)
-                else:
-                    print("😔 No profitable opportunities found")
+                    print("=" * 60)
 
-                # Wait 2 seconds
-                await asyncio.sleep(2)
+                    # Fetch data
+                    if not await detector.fetch_data():
+                        print("❌ Failed to fetch data, retrying...")
+                        await asyncio.sleep(5)
+                        continue
 
-        except KeyboardInterrupt:
-            print("\n🛑 Stopped by user")
-            break
-        except Exception as e:
-            print(f"❌ {exchange_name} failed: {e}")
-            continue
+                    # Build graph
+                    detector.build_graph()
+
+                    # Find opportunities
+                    opportunities = detector.find_arbitrage_opportunities()
+
+                    # Display top 2
+                    if opportunities:
+                        print(
+                            f"✅ Found {len(opportunities)} opportunities | Executing top 2\n"
+                        )
+                        detector.display_opportunities(opportunities, max_display=2)
+                    else:
+                        print("😔 No profitable opportunities found")
+
+                    # Wait 2 seconds
+                    await asyncio.sleep(2)
+
+            except KeyboardInterrupt:
+                print("\n🛑 Stopped by user")
+                break
+            except Exception as e:
+                print(f"❌ {exchange_name} failed: {e}")
+                continue
+        """
 
 
 if __name__ == "__main__":
