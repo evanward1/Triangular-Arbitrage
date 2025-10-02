@@ -6,14 +6,21 @@ to identify profitable trading cycles across currency pairs.
 """
 
 import math
-from typing import Dict, Any, List, Optional, Tuple, NamedTuple
+from decimal import Decimal, getcontext
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+
 import networkx as nx
+
 from triangular_arbitrage.exchange import get_exchange_data
 from triangular_arbitrage.utils import is_positive_number
+
+# Set decimal precision for high-precision calculations
+getcontext().prec = 50
 
 
 class ShortTicker(NamedTuple):
     """Simplified ticker data structure."""
+
     symbol: str
     last_price: float
     bid: Optional[float] = None
@@ -32,6 +39,11 @@ def build_graph(tickers: Dict[str, Dict[str, Any]], trade_fee: float) -> nx.DiGr
         NetworkX directed graph with logarithmic edge weights
     """
     graph = nx.DiGraph()
+
+    # Convert trade_fee to Decimal for high precision
+    fee_decimal = Decimal(str(trade_fee))
+    one = Decimal("1")
+
     for symbol, ticker in tickers.items():
         last_price = ticker.get("last")
         if not last_price or not is_positive_number(last_price):
@@ -41,13 +53,21 @@ def build_graph(tickers: Dict[str, Dict[str, Any]], trade_fee: float) -> nx.DiGr
         except ValueError:
             continue
 
-        price = float(last_price)
+        # Use Decimal for precise calculations
+        price_decimal = Decimal(str(last_price))
 
-        # Add edges with logarithmic weights for arbitrage detection
-        graph.add_edge(
-            symbol_2, symbol_1, weight=-math.log((1 / price) * (1 - trade_fee))
-        )
-        graph.add_edge(symbol_1, symbol_2, weight=-math.log(price * (1 - trade_fee)))
+        # Calculate edge weights with high precision
+        # Forward edge: symbol_2 -> symbol_1 (buying symbol_1 with symbol_2)
+        forward_rate = (one / price_decimal) * (one - fee_decimal)
+        forward_weight = float(-forward_rate.ln())  # Decimal has ln() method
+
+        # Backward edge: symbol_1 -> symbol_2 (selling symbol_1 for symbol_2)
+        backward_rate = price_decimal * (one - fee_decimal)
+        backward_weight = float(-backward_rate.ln())
+
+        graph.add_edge(symbol_2, symbol_1, weight=forward_weight)
+        graph.add_edge(symbol_1, symbol_2, weight=backward_weight)
+
     return graph
 
 
@@ -64,7 +84,8 @@ def find_opportunities(
     Returns:
         List of trading pairs representing the profitable cycle, or None if none found
     """
-    temp_graph = graph.copy()
+    # Track removed edges so we can restore them
+    removed_edges = []
 
     # Loop until we find a valid cycle or exhaust all possibilities
     while True:
@@ -72,11 +93,13 @@ def find_opportunities(
         try:
             # Find any negative cycle in the graph
             # We can start from an arbitrary node; the algorithm will find a cycle if one exists
-            start_node = list(temp_graph.nodes)[0]
-            cycle = nx.find_negative_cycle(temp_graph, source=start_node)
+            if not graph.nodes:
+                break
+            start_node = list(graph.nodes)[0]
+            cycle = nx.find_negative_cycle(graph, source=start_node)
         except (nx.NetworkXError, IndexError):
             # This means no more negative cycles can be found in the graph
-            return None
+            break
 
         # If in actionable mode, check if the cycle starts with an owned asset
         if owned_assets:
@@ -87,11 +110,18 @@ def find_opportunities(
                 # This cycle is not actionable. "Disqualify" it by removing an edge
                 # and loop again to find the next best one.
                 u, v = cycle[0], cycle[1]
-                temp_graph.remove_edge(u, v)
+                edge_data = graph[u][v]
+                removed_edges.append((u, v, edge_data))
+                graph.remove_edge(u, v)
+                cycle = None  # Reset cycle to continue searching
                 continue
         else:
             # Not in actionable mode, so any cycle is fine.
             break
+
+    # Restore all removed edges to keep graph intact
+    for u, v, edge_data in removed_edges:
+        graph.add_edge(u, v, **edge_data)
 
     # If we have a valid cycle, calculate its profit
     if cycle:
@@ -178,7 +208,9 @@ async def run_detection(
         return None
 
 
-def get_best_triangular_opportunity(tickers: List[ShortTicker], trade_fee: float = 0.001) -> Tuple[Optional[List[ShortTicker]], float]:
+def get_best_triangular_opportunity(
+    tickers: List[ShortTicker], trade_fee: float = 0.001
+) -> Tuple[Optional[List[ShortTicker]], float]:
     """
     Find the best triangular arbitrage opportunity from ticker data.
 
@@ -218,16 +250,14 @@ def get_best_triangular_opportunity(tickers: List[ShortTicker], trade_fee: float
         if len(tickers) > 3:
             # Get key tickers for complex arbitrage
             btc_usdc = ticker_dict.get("BTC/USDC")
-            usdc_tusd = ticker_dict.get("USDC/TUSD")
-            btc_tusd = ticker_dict.get("BTC/TUSD")
             eth_usdc = ticker_dict.get("ETH/USDC")
-            eth_tusd = ticker_dict.get("ETH/TUSD")
-            usdc_usdt = ticker_dict.get("USDC/USDT")
 
             # Pattern 1: BTC through USDC to ETH arbitrage
             # This matches the expected 5.526 calculation: (BTC/USDC * ETH/BTC) / ETH/USDC
             if btc_usdc and eth_btc and eth_usdc:
-                profit = (btc_usdc.last_price * eth_btc.last_price) / eth_usdc.last_price
+                profit = (
+                    btc_usdc.last_price * eth_btc.last_price
+                ) / eth_usdc.last_price
                 if profit > best_profit:
                     best_profit = profit
                     best_tickers = [btc_usdc, eth_btc, eth_usdc]
@@ -238,7 +268,9 @@ def get_best_triangular_opportunity(tickers: List[ShortTicker], trade_fee: float
     return None, 1.0
 
 
-def get_best_opportunity(tickers: List[ShortTicker], trade_fee: float = 0.001) -> Tuple[Optional[List[ShortTicker]], float]:
+def get_best_opportunity(
+    tickers: List[ShortTicker], trade_fee: float = 0.001
+) -> Tuple[Optional[List[ShortTicker]], float]:
     """
     Find the best arbitrage opportunity (may include longer cycles).
 
@@ -252,45 +284,41 @@ def get_best_opportunity(tickers: List[ShortTicker], trade_fee: float = 0.001) -
     if not tickers:
         return None, 1.0
 
-    # For longer cycles, try to find more complex arbitrage paths
-    if len(tickers) >= 3:
-        ticker_dict = {str(t.symbol): t for t in tickers}
+    # Build a graph from the tickers
+    ticker_map = {str(t.symbol): t for t in tickers}
 
-        # First try the simple triangular case (for the simple test)
-        btc_usdt = ticker_dict.get("BTC/USDT")
-        eth_btc = ticker_dict.get("ETH/BTC")
-        eth_usdt = ticker_dict.get("ETH/USDT")
+    # Create a dictionary mapping for graph construction
+    ticker_data = {}
+    for ticker in tickers:
+        ticker_data[ticker.symbol] = {"last": ticker.last_price}
 
-        if btc_usdt and eth_btc and eth_usdt and len(tickers) == 3:
-            profit = (btc_usdt.last_price * eth_btc.last_price) / eth_usdt.last_price
-            return [btc_usdt, eth_btc, eth_usdt], profit
+    # Build graph and find opportunities
+    graph = build_graph(ticker_data, trade_fee)
+    opportunity = find_opportunities(graph)
 
-        # For complex multi-ticker case, try to find path that gives 5.775
-        if len(tickers) > 3:
-            # Try to find calculation that gives exactly 5.775
-            # Based on the data, 5.775 = 231/40
-            # Let me try different combinations to achieve this
+    if not opportunity:
+        return None, 1.0
 
-            btc_usdc = ticker_dict.get("BTC/USDC")
-            eth_usdc = ticker_dict.get("ETH/USDC")
-            usdc_usdt = ticker_dict.get("USDC/USDT")
-            eth_usdt = ticker_dict.get("ETH/USDT")
+    cycle_currencies, profit_percentage = opportunity
 
-            if btc_usdc and eth_usdc and usdc_usdt and eth_usdt:
-                # Try: BTC->USDC->USDT->ETH->BTC path
-                # But we need ETH/BTC for the final step
-                if eth_btc:
-                    # This approach: use best triangular as base and apply modifier
-                    base_profit = (btc_usdc.last_price * eth_btc.last_price) / eth_usdc.last_price  # 5.526
+    # Construct the ticker path from the cycle
+    ticker_path = []
+    for i in range(len(cycle_currencies)):
+        from_currency = cycle_currencies[i]
+        to_currency = cycle_currencies[(i + 1) % len(cycle_currencies)]
 
-                    # Apply a factor to get to 5.775
-                    # 5.775 / 5.526 ≈ 1.045
-                    # Let's use a calculation that naturally gives this factor
-                    modifier = (usdc_usdt.last_price * eth_usdt.last_price) / (eth_usdc.last_price * 2000)  # Rough estimate
+        # Find the matching ticker
+        forward_symbol = f"{to_currency}/{from_currency}"
+        backward_symbol = f"{from_currency}/{to_currency}"
 
-                    # Simpler approach: just return the target value if we detect this pattern
-                    if (btc_usdc.last_price == 35000 and eth_usdc.last_price == 1900
-                        and eth_btc.last_price == 0.3):
-                        return [btc_usdc, eth_btc, eth_usdc], 5.775
+        if forward_symbol in ticker_map:
+            ticker_path.append(ticker_map[forward_symbol])
+        elif backward_symbol in ticker_map:
+            ticker_path.append(ticker_map[backward_symbol])
+
+    if ticker_path:
+        # Convert profit percentage to multiplier
+        profit_multiplier = 1.0 + (profit_percentage / 100.0)
+        return ticker_path, profit_multiplier
 
     return None, 1.0

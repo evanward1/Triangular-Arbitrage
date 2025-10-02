@@ -381,7 +381,7 @@ class StateManager:
                 error_message TEXT,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
-                FOREIGN KEY (cycle_id) REFERENCES cycles(id) ON DELETE CASCADE
+                FOREIGN KEY (cycle_id) REFERENCES cycles(id) ON DELETE RESTRICT
             )
         """
         )
@@ -904,29 +904,31 @@ class StateManager:
 
         # Check cache first if enabled
         if self.enable_cache:
-            # Ensure cache is flushed before reading
-            await self._flush_cache()
+            # Use lock to prevent race conditions between cache and database
+            async with self._lock:
+                # Ensure cache is flushed before reading
+                await self._flush_cache()
 
-            cached_cycles = await self.cache.get_all()
-            active_cycles = []
+                cached_cycles = await self.cache.get_all()
+                active_cycles = []
 
-            for cycle in cached_cycles:
-                if cycle.state in active_states:
-                    if not strategy_name or cycle.strategy_name == strategy_name:
-                        active_cycles.append(cycle)
+                for cycle in cached_cycles:
+                    if cycle.state in active_states:
+                        if not strategy_name or cycle.strategy_name == strategy_name:
+                            active_cycles.append(cycle)
 
-            # Also check database for any cycles not in cache
-            db_cycles = await self._get_active_cycles_from_db(strategy_name)
+                # Also check database for any cycles not in cache
+                db_cycles = await self._get_active_cycles_from_db(strategy_name)
 
-            # Merge, preferring cached versions
-            cached_ids = {c.id for c in active_cycles}
-            for db_cycle in db_cycles:
-                if db_cycle.id not in cached_ids:
-                    active_cycles.append(db_cycle)
-                    # Add to cache for future access
-                    await self.cache.put(db_cycle)
+                # Merge, preferring cached versions
+                cached_ids = {c.id for c in active_cycles}
+                for db_cycle in db_cycles:
+                    if db_cycle.id not in cached_ids:
+                        active_cycles.append(db_cycle)
+                        # Add to cache for future access
+                        await self.cache.put(db_cycle)
 
-            return active_cycles
+                return active_cycles
         else:
             return await self._get_active_cycles_from_db(strategy_name)
 
@@ -1244,8 +1246,9 @@ class OrderManager:
         self.rapid_check_threshold = (
             self.monitor_config.get("rapid_check_threshold_ms", 2000) / 1000.0
         )
+        # Increased from 50ms to 200ms to avoid rate limiting
         self.rapid_check_interval = (
-            self.monitor_config.get("rapid_check_interval_ms", 50) / 1000.0
+            self.monitor_config.get("rapid_check_interval_ms", 200) / 1000.0
         )
 
         # Rate limit awareness
@@ -1670,6 +1673,15 @@ class StrategyExecutionEngine:
         self.max_leg_latency_ms = strategy_config.get("max_leg_latency_ms")
         self.max_slippage_bps = strategy_config.get("max_slippage_bps", 20)
 
+        # Configurable timeout values for recovery
+        recovery_config = strategy_config.get("recovery", {})
+        self.max_cycle_age_seconds = recovery_config.get(
+            "max_cycle_age_seconds", 3600
+        )  # 1 hour default
+        self.max_order_age_seconds = recovery_config.get(
+            "max_order_age_seconds", 300
+        )  # 5 minutes default
+
         # Check if individual risk controls are enabled
         risk_controls_config = strategy_config.get("risk_controls", {})
         latency_checks_enabled = (
@@ -1951,6 +1963,85 @@ class StrategyExecutionEngine:
 
         return True
 
+    async def _validate_remaining_cycle(
+        self,
+        cycle_info: CycleInfo,
+        next_step: int,
+        trade_path: List[str],
+        markets: Dict,
+    ) -> bool:
+        """Validate that the current amount is sufficient for remaining cycle legs
+
+        Args:
+            cycle_info: Current cycle information with updated amount
+            next_step: Index of the next step in the trade path
+            trade_path: Full trade path including return to start
+            markets: Dictionary of available markets
+
+        Returns:
+            True if remaining cycle can be executed, False otherwise
+        """
+        from_currency = cycle_info.current_currency
+        amount = cycle_info.current_amount
+
+        # Simulate remaining trades to check minimum requirements
+        for i in range(next_step, len(trade_path) - 1):
+            to_currency = trade_path[i + 1]
+
+            # Find the market
+            market_symbol_forward = f"{to_currency}/{from_currency}"
+            market_symbol_backward = f"{from_currency}/{to_currency}"
+
+            market = None
+            order_side = None
+
+            if market_symbol_forward in markets:
+                market = markets[market_symbol_forward]
+                order_side = "buy"
+            elif market_symbol_backward in markets:
+                market = markets[market_symbol_backward]
+                order_side = "sell"
+            else:
+                logger.error(f"No market found for {from_currency} -> {to_currency}")
+                return False
+
+            # Check minimum order requirements
+            min_order_amount = market.get("limits", {}).get("amount", {}).get("min")
+            min_order_cost = market.get("limits", {}).get("cost", {}).get("min")
+
+            if order_side == "sell" and min_order_amount and amount < min_order_amount:
+                logger.error(
+                    f"Insufficient amount for leg {i+1}: {amount} < {min_order_amount} (min)"
+                )
+                return False
+
+            if order_side == "buy" and min_order_cost and amount < min_order_cost:
+                logger.error(
+                    f"Insufficient value for leg {i+1}: {amount} < {min_order_cost} (min cost)"
+                )
+                return False
+
+            # Estimate amount for next step (using conservative slippage)
+            try:
+                ticker = await self.exchange.fetch_ticker(market["symbol"])
+                price = ticker.last
+
+                # Apply expected slippage
+                slippage = 1 - (self.max_slippage_bps / 10000)
+
+                if order_side == "buy":
+                    amount = (amount / price) * slippage
+                else:
+                    amount = (amount * price) * slippage
+            except Exception as e:
+                logger.warning(f"Could not fetch ticker for validation: {e}")
+                # Be conservative - assume we can't proceed
+                return False
+
+            from_currency = to_currency
+
+        return True
+
     async def _execute_cycle_trades(self, cycle_info: CycleInfo) -> bool:
         """Execute all trades in a cycle"""
         # RISK CONTROLS DISABLED
@@ -2067,8 +2158,20 @@ class StrategyExecutionEngine:
                                 )
                                 cycle_info.current_currency = to_currency
 
+                            # Validate that remaining amount meets minimum order requirements
+                            if not await self._validate_remaining_cycle(
+                                cycle_info, i + 1, trade_path, markets
+                            ):
+                                cycle_info.error_message = (
+                                    f"Partial fill at leg {i+1} leaves insufficient amount "
+                                    f"({cycle_info.current_amount} {cycle_info.current_currency}) "
+                                    f"for remaining cycle legs"
+                                )
+                                logger.error(cycle_info.error_message)
+                                return False
+
                             logger.warning(
-                                f"Proceeding with partial fill: {cycle_info.current_amount}"
+                                f"Proceeding with partial fill: {cycle_info.current_amount} {cycle_info.current_currency}"
                             )
                         else:
                             cycle_info.error_message = "Order not fully filled"
@@ -2369,9 +2472,8 @@ class StrategyExecutionEngine:
         """
         # Check cycle age
         cycle_age = time.time() - cycle_info.start_time
-        max_cycle_age = 3600  # 1 hour
 
-        if cycle_age > max_cycle_age:
+        if cycle_age > self.max_cycle_age_seconds:
             logger.warning(
                 f"Cycle {cycle_info.id} is too old ({cycle_age:.0f}s), marking for panic sell"
             )
@@ -2390,7 +2492,7 @@ class StrategyExecutionEngine:
                 last_order = cycle_info.orders[-1]
                 if last_order.state in [OrderState.PENDING, OrderState.PLACED]:
                     order_age = time.time() - last_order.timestamp
-                    if order_age > 300:  # 5 minutes
+                    if order_age > self.max_order_age_seconds:
                         logger.warning(
                             f"Cycle {cycle_info.id} has stale order, needs validation"
                         )

@@ -20,17 +20,17 @@ Classes:
     DrawdownMonitor: Drawdown calculation and limits
 """
 
-import time
-import logging
 import json
+import logging
 import os
 import tempfile
 import threading
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, asdict
+import time
 from collections import defaultdict
-from pathlib import Path
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from .utils import get_logger
 
@@ -50,6 +50,7 @@ class LatencyMeasurement:
         latency_ms: Calculated latency in milliseconds
         side: Order side ('buy' or 'sell')
     """
+
     leg_index: int
     market_symbol: str
     start_time: float
@@ -136,10 +137,21 @@ class SlippageTracker:
         executed_price: float,
         side: str,
     ) -> SlippageMeasurement:
-        if side == "buy":
-            slippage_bps = ((executed_price - expected_price) / expected_price) * 10000
+        # Handle division by zero for expected_price
+        if expected_price == 0:
+            if executed_price > 0:
+                slippage_bps = float("inf")
+            else:
+                slippage_bps = 0.0
         else:
-            slippage_bps = ((expected_price - executed_price) / expected_price) * 10000
+            if side == "buy":
+                slippage_bps = (
+                    (executed_price - expected_price) / expected_price
+                ) * 10000
+            else:
+                slippage_bps = (
+                    (expected_price - executed_price) / expected_price
+                ) * 10000
 
         measurement = SlippageMeasurement(
             leg_index=leg_index,
@@ -209,6 +221,9 @@ class RiskControlLogger:
         self.suppression_window = suppression_window
         self._duplicate_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._cache_lock = threading.Lock()
+        self._duplicate_cache_lock = (
+            threading.Lock()
+        )  # Additional lock for duplicate cache
         self._total_duplicates_suppressed = 0
         self._suppressed_history: List[Dict[str, Any]] = []
         self._max_history_size = 100
@@ -219,7 +234,7 @@ class RiskControlLogger:
         if self.suppression_window <= 0:
             return False
 
-        with self._cache_lock:
+        with self._duplicate_cache_lock:
             key = (cycle_id, stop_reason)
 
             if key in self._duplicate_cache:
