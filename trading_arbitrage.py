@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 import ccxt
 import networkx as nx
 
+from equity_tracker import EquityTracker
 from triangular_arbitrage.execution_helpers import (
     depth_limited_size,
     estimate_cycle_slippage_pct,
@@ -54,6 +55,9 @@ class RealTriangularArbitrage:
         self.max_position_size = float(os.getenv("MAX_POSITION_SIZE", "100"))
         self.min_profit_threshold = float(os.getenv("MIN_PROFIT_THRESHOLD", "0.20"))
         self.max_leg_latency_ms = int(os.getenv("MAX_LEG_LATENCY_MS", "2000"))
+
+        # Sizing configuration
+        self.min_fraction_of_target = float(os.getenv("MIN_FRACTION_OF_TARGET", "0.05"))
 
         # Display settings
         self.verbosity = os.getenv("VERBOSITY", "normal").lower()
@@ -99,6 +103,9 @@ class RealTriangularArbitrage:
         self.start_equity_usd = None
         self.last_equity_usd = None
         self.equity_curve = []  # [(ts, equity_usd)]
+
+        # Initialize EquityTracker
+        self.equity_tracker = EquityTracker(out_dir="logs")
 
         # Near-miss detection
         self.near_miss_bps = (
@@ -281,49 +288,17 @@ class RealTriangularArbitrage:
 
             # In paper mode, initialize paper balances on first fetch
             if self.trading_mode == "paper" and not self.paper_balances:
-                self.paper_balances = {}
+                # Choose base unit from env
+                base_cash = os.getenv("BASE_CASH", "USDT")
+                start_cash = float(os.getenv(f"PAPER_{base_cash}", "1000"))
 
-                # Check if we should use test balances (no tradable balance in priority currencies)
-                use_test_balance = True
-                priority_test_currencies = ["USDC", "USDG", "EUR", "USDT", "USD"]
-
-                for currency, balance in self.balances.items():
-                    if isinstance(balance, dict):
-                        total = balance.get("total", 0)
-                        normalized_currency = currency.replace(".F", "")
-
-                        if total and total > 0:
-                            self.paper_balances[normalized_currency] = {
-                                "free": total,
-                                "used": 0.0,
-                                "total": total,
-                            }
-
-                            # Check if we have any meaningful balance in priority currencies
-                            if (
-                                normalized_currency in priority_test_currencies
-                                and total > 1.0
-                            ):
-                                use_test_balance = False
-
-                # If no meaningful balances found, initialize with test balances (stablecoins + major cryptos)
-                if use_test_balance:
-                    self.paper_balances = {}  # Clear any tiny balances
-                    test_balances = {
-                        "USDT": self.paper_usdt,
-                        "USDC": self.paper_usdc,
-                        "USD": 100.0,
-                        "BTC": 0.005,
-                        "ETH": 0.05,
-                        "SOL": 2.0,
-                        "DGB": 100.0,
+                self.paper_balances = {
+                    base_cash: {
+                        "free": start_cash,
+                        "used": 0.0,
+                        "total": start_cash,
                     }
-                    for currency, amount in test_balances.items():
-                        self.paper_balances[currency] = {
-                            "free": amount,
-                            "used": 0.0,
-                            "total": amount,
-                        }
+                }
 
             # Return balances (paper or real)
             display_balances = (
@@ -596,6 +571,9 @@ class RealTriangularArbitrage:
             # Track realized P&L in USD
             realized_usd = profit
             self.realized_pnl_usd += realized_usd
+
+            # Record fill in equity tracker
+            self.equity_tracker.on_fill(realized_usd)
 
             # Update equity after trade
             cur, _, _ = self._equity_usd()
@@ -1087,6 +1065,87 @@ class RealTriangularArbitrage:
         except Exception as e:
             logger.error(f"Near-miss CSV logging error: {e}")
 
+    async def get_cash(self):
+        """Get total cash (USD + USDT) balance for equity tracker"""
+        bals = self.paper_balances if self.trading_mode == "paper" else self.balances
+        cash = 0.0
+        for asset in ["USD", "USDT"]:
+            if asset in bals:
+                balance = bals[asset]
+                if isinstance(balance, dict):
+                    cash += balance.get("total", 0)
+                else:
+                    cash += balance
+        return cash
+
+    async def get_asset_value(self):
+        """Get total non-cash asset value for equity tracker"""
+        bals = self.paper_balances if self.trading_mode == "paper" else self.balances
+        asset_value = 0.0
+
+        for asset, balance in bals.items():
+            if asset in ["USD", "USDT"]:
+                continue  # Skip cash
+
+            if isinstance(balance, dict):
+                qty = balance.get("total", 0)
+            else:
+                qty = balance
+
+            if qty <= 0:
+                continue
+
+            # Get price for asset
+            ticker_symbol = f"{asset}/USDT"
+            if ticker_symbol in self.tickers:
+                px = float(self.tickers[ticker_symbol].get("last", 0))
+            else:
+                ticker_symbol = f"{asset}/USD"
+                if ticker_symbol in self.tickers:
+                    px = float(self.tickers[ticker_symbol].get("last", 0))
+                else:
+                    px = 0.0
+
+            asset_value += float(qty) * float(px)
+
+        return asset_value
+
+    def _log_start_equity_breakdown(self):
+        """Log detailed breakdown of starting equity"""
+        total = 0.0
+        logger.info("Start equity breakdown:")
+        bals = self.paper_balances if self.trading_mode == "paper" else self.balances
+
+        for asset, balance in bals.items():
+            if isinstance(balance, dict):
+                qty = balance.get("total", 0)
+            else:
+                qty = balance
+
+            if qty <= 0:
+                continue
+
+            # Treat USD and USDT as 1.0
+            if asset in ("USD", "USDT"):
+                px = 1.0
+            else:
+                # Get price for other assets
+                ticker_symbol = f"{asset}/USDT"
+                if ticker_symbol in self.tickers:
+                    px = float(self.tickers[ticker_symbol].get("last", 0))
+                else:
+                    ticker_symbol = f"{asset}/USD"
+                    if ticker_symbol in self.tickers:
+                        px = float(self.tickers[ticker_symbol].get("last", 0))
+                    else:
+                        px = 0.0
+
+            val = float(qty) * float(px)
+            total += val
+            logger.info(f"  {asset}: qty={qty:.8f} px={px:.8f} val=${val:.2f}")
+
+        logger.info(f"Start equity sum: ${total:.2f}")
+
     def _equity_usd(self):
         """Calculate total equity in USD (mark-to-market)"""
         total = 0.0
@@ -1279,6 +1338,9 @@ class RealTriangularArbitrage:
         print("💡 Press Ctrl+C to stop\n")
 
         await self.fetch_balances()
+
+        # Log detailed start equity breakdown
+        self._log_start_equity_breakdown()
 
         # Calculate and display starting equity
         self.start_equity_usd, priced, unpriced = self._equity_usd()
@@ -1570,12 +1632,27 @@ class RealTriangularArbitrage:
                             if self.evs:
                                 ev_scan = sum(self.evs) / len(self.evs)
                                 if self.ev_day_factor:
-                                    scans_per_day = 86400 / max(1, self.poll_sec)
-                                    ev_day = ev_scan * scans_per_day
-                                    print(
-                                        f" | EV/scan=${ev_scan:+.2f} EV/day=${ev_day:+.0f}",
-                                        end="",
+                                    # Initialize EV timer on first use
+                                    if not hasattr(self, "_ev_timer_t0"):
+                                        self._ev_timer_t0 = time.time()
+                                        self._ev_scan_count = 0
+
+                                    self._ev_scan_count += 1
+                                    elapsed = max(time.time() - self._ev_timer_t0, 1e-6)
+                                    scans_per_min = self._ev_scan_count / (
+                                        elapsed / 60.0
                                     )
+                                    ev_per_min = ev_scan * scans_per_min
+                                    ev_day = ev_per_min * 60.0 * 24.0
+
+                                    # Only print EV per day after at least 10 scans for stability
+                                    if self._ev_scan_count >= 10:
+                                        print(
+                                            f" | EV/scan=${ev_scan:+.2f} EV/day=${ev_day:+.0f}",
+                                            end="",
+                                        )
+                                    else:
+                                        print(f" | EV/scan=${ev_scan:+.2f}", end="")
                                 else:
                                     print(f" | EV/scan=${ev_scan:+.2f}", end="")
 
@@ -1823,16 +1900,24 @@ class RealTriangularArbitrage:
                     # Track attempt
                     self.execution_stats["attempts"] += 1
 
+                    # Determine size after balance cap (the actual intended order size)
+                    size_after_balance_cap = min(
+                        self.max_position_size, available_balance
+                    )
+
                     # Check depth-limited size
                     logger.info("📏 Computing depth-limited size...")
                     depth_limited_size_usd = await self.compute_depth_limited_size(
                         cycle, self.max_position_size
                     )
 
-                    if depth_limited_size_usd < self.max_position_size * 0.5:
+                    # Compare depth size against the balance-capped size
+                    min_required = size_after_balance_cap * self.min_fraction_of_target
+                    if depth_limited_size_usd < min_required:
                         logger.warning(
                             f"   ⚠️ REJECT: Depth-limited size ${depth_limited_size_usd:.2f} "
-                            f"< 50% of max (${self.max_position_size})"
+                            f"< {self.min_fraction_of_target*100:.1f}% of balance-capped size "
+                            f"(${size_after_balance_cap:.2f})"
                         )
                         self.execution_stats["depth_rejects"] += 1
                         continue
@@ -1880,6 +1965,9 @@ class RealTriangularArbitrage:
                     f"\n✅ Executed {executed_count}/{len(opportunities)} "
                     f"opportunities in scan {trade_num}"
                 )
+
+                # Record scan in equity tracker
+                await self.equity_tracker.on_scan(self.get_cash, self.get_asset_value)
 
                 # Wait before next cycle
                 logger.info("🔄 Searching for next opportunity...")
