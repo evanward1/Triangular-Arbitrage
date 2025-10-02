@@ -14,6 +14,12 @@ from typing import Dict, List, Optional
 import ccxt
 import networkx as nx
 
+from triangular_arbitrage.execution_helpers import (
+    depth_limited_size,
+    estimate_cycle_slippage_pct,
+    leg_timed,
+)
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,9 +30,18 @@ if platform.system() == "Windows":
 
 
 class RealTriangularArbitrage:
-    def __init__(self, exchange_name: str = "kraken", trading_mode: str = "paper"):
+    # Exchange-specific fee structures (maker/taker)
+    EXCHANGE_FEES = {
+        "binanceus": {"maker": 0.001, "taker": 0.001},  # 0.10%
+        "binance": {"maker": 0.001, "taker": 0.001},  # 0.10% (0.075% with BNB)
+        "kraken": {"maker": 0.0016, "taker": 0.0026},  # 0.16%/0.26%
+        "kucoin": {"maker": 0.001, "taker": 0.001},  # 0.10%
+        "coinbase": {"maker": 0.004, "taker": 0.006},  # 0.40%/0.60%
+    }
+
+    def __init__(self, exchange_name: str = "binanceus", trading_mode: str = "paper"):
         """Initialize real trading arbitrage system"""
-        self.exchange_name = exchange_name
+        self.exchange_name = exchange_name.lower()
         self.trading_mode = trading_mode  # 'paper' or 'live'
         self.exchange = None
         self.symbols = []
@@ -37,14 +52,164 @@ class RealTriangularArbitrage:
 
         # Safety limits
         self.max_position_size = float(os.getenv("MAX_POSITION_SIZE", "100"))
-        self.min_profit_threshold = float(os.getenv("MIN_PROFIT_THRESHOLD", "0.1"))
+        self.min_profit_threshold = float(os.getenv("MIN_PROFIT_THRESHOLD", "0.20"))
+        self.max_leg_latency_ms = int(os.getenv("MAX_LEG_LATENCY_MS", "2000"))
+
+        # Display settings
+        self.verbosity = os.getenv("VERBOSITY", "normal").lower()
+        self.topn = int(os.getenv("TOPN", "3"))
+        self.run_min = int(os.getenv("RUN_MIN", "0"))
+
+        # Dedupe settings
+        self.change_bps = int(os.getenv("CHANGE_BPS", "3"))
+        self.print_every_n = int(os.getenv("PRINT_EVERY_N", "6"))
+        self.dedupe = os.getenv("DEDUPE", "true").lower() == "true"
+        self._last_key = None
+        self._last_net = None
+        self._repeat = 0
+
+        # Delta display settings
+        self.show_delta = os.getenv("SHOW_DELTA", "true").lower() == "true"
+        self._last_print_key = None
+        self._last_print_net = None
+        self._last_print_gross = None
+
+        # Reason buckets
+        self.reason_buckets = os.getenv("REASON_BUCKETS", "true").lower() == "true"
+        self.reject_by_threshold = 0
+        self.reject_by_fees = 0
+        self.reject_by_slip = 0
+        self.reject_by_depth = 0
+
+        # USD P&L and EV accounting
+        self.show_usd = os.getenv("SHOW_USD", "true").lower() == "true"
+        self.ev_window = int(os.getenv("EV_WINDOW", "30"))
+        self.ev_only_above_thr = (
+            os.getenv("EV_ONLY_ABOVE_THR", "true").lower() == "true"
+        )
+        self.ev_day_factor = os.getenv("EV_DAY_FACTOR", "true").lower() == "true"
+        self.realized_pnl_usd = 0.0
+        self.hyp_best_pnl_usd_sum = 0.0
+        self.hyp_best_count = 0
+        self.evs = []
+
+        # Equity accounting
+        self.equity_precision = int(os.getenv("EQUITY_PRECISION", "2"))
+        self.equity_every_n = int(os.getenv("EQUITY_EVERY_N", "3"))
+        self.start_equity_usd = None
+        self.last_equity_usd = None
+        self.equity_curve = []  # [(ts, equity_usd)]
+
+        # Near-miss detection
+        self.near_miss_bps = (
+            float(os.getenv("NEAR_MISS_BPS", "5")) / 100
+        )  # Convert to percent
+
+        # Paper balance defaults
+        self.paper_usdt = float(os.getenv("PAPER_USDT", "1000"))
+        self.paper_usdc = float(os.getenv("PAPER_USDC", "1000"))
+
+        # Symbol curation
+        self.symbol_allowlist = (
+            os.getenv("SYMBOL_ALLOWLIST", "").split(",")
+            if os.getenv("SYMBOL_ALLOWLIST")
+            else []
+        )
+        self.symbol_allowlist = [
+            s.strip().upper() for s in self.symbol_allowlist if s.strip()
+        ]
+        self.triangle_bases = os.getenv("TRIANGLE_BASES", "USD,USDT").split(",")
+        self.triangle_bases = [
+            s.strip().upper() for s in self.triangle_bases if s.strip()
+        ]
+        self.exclude_symbols = (
+            os.getenv("EXCLUDE_SYMBOLS", "").split(",")
+            if os.getenv("EXCLUDE_SYMBOLS")
+            else []
+        )
+        self.exclude_symbols = [
+            s.strip().upper() for s in self.exclude_symbols if s.strip()
+        ]
+
+        # Depth and polling
+        self.depth_levels = int(os.getenv("DEPTH_LEVELS", "20"))
+        self.poll_sec = int(os.getenv("POLL_SEC", "10"))
+
+        # Fee source
+        self.fee_source = os.getenv("FEE_SOURCE", "static").lower()
+
+        # Live safety
+        self.live_confirm = os.getenv("LIVE_CONFIRM", "NO").upper()
+
+        # EMA tracking
+        self.ema_alpha = 2 / (15 + 1)  # EMA(15)
+        self.ema_gross = None
+        self.ema_net = None
+
+        # Set exchange-specific fees (will be updated in _setup_exchange if FEE_SOURCE=auto)
+        self.fee_structure = self.EXCHANGE_FEES.get(
+            self.exchange_name, {"maker": 0.002, "taker": 0.002}
+        )
+        self.maker_fee = self.fee_structure["maker"]
+        self.taker_fee = self.fee_structure["taker"]
+        self.fee_source_actual = "static"  # Will be updated if auto succeeds
+
+        # Execution quality tracking
+        self.execution_stats = {
+            "attempts": 0,
+            "full_fills": 0,
+            "partial_fills": 0,
+            "cancels": 0,
+            "depth_rejects": 0,
+            "slippage_rejects": 0,
+            "timeouts": 0,
+            "maker_used_count": 0,
+            "maker_to_taker_fallbacks": 0,
+        }
+        self.trade_history = []  # Store executed trades with metrics
+        self._last_scan_best = None  # Store best opportunity for CSV logging
+
+        # Setup CSV logging
+        if self.verbosity == "debug":
+            os.makedirs("logs", exist_ok=True)
 
         self._setup_exchange()
 
     def _setup_exchange(self):
         """Setup exchange with API credentials"""
         try:
-            if self.exchange_name.lower() == "kraken":
+            if self.exchange_name.lower() == "binanceus":
+                self.exchange = ccxt.binanceus(
+                    {
+                        "apiKey": os.getenv("BINANCEUS_API_KEY"),
+                        "secret": os.getenv("BINANCEUS_SECRET"),
+                        "enableRateLimit": True,
+                        "sandbox": False,
+                        "options": {
+                            "defaultType": "spot",
+                        },
+                    }
+                )
+            elif self.exchange_name.lower() == "binance":
+                self.exchange = ccxt.binance(
+                    {
+                        "apiKey": os.getenv("BINANCE_API_KEY"),
+                        "secret": os.getenv("BINANCE_SECRET"),
+                        "enableRateLimit": True,
+                        "sandbox": False,
+                        "options": {
+                            "defaultType": "spot",
+                        },
+                        # Add proxy if configured
+                        "proxies": {
+                            "http": os.getenv("HTTP_PROXY"),
+                            "https": os.getenv("HTTPS_PROXY"),
+                        }
+                        if os.getenv("HTTP_PROXY")
+                        else None,
+                    }
+                )
+            elif self.exchange_name.lower() == "kraken":
                 self.exchange = ccxt.kraken(
                     {
                         "apiKey": os.getenv("KRAKEN_API_KEY"),
@@ -53,11 +218,12 @@ class RealTriangularArbitrage:
                         "sandbox": False,  # Always use live data, even in paper mode
                     }
                 )
-            elif self.exchange_name.lower() == "binance":
-                self.exchange = ccxt.binance(
+            elif self.exchange_name.lower() == "kucoin":
+                self.exchange = ccxt.kucoin(
                     {
-                        "apiKey": os.getenv("BINANCE_API_KEY"),
-                        "secret": os.getenv("BINANCE_SECRET"),
+                        "apiKey": os.getenv("KUCOIN_API_KEY"),
+                        "secret": os.getenv("KUCOIN_SECRET"),
+                        "password": os.getenv("KUCOIN_PASSWORD"),
                         "enableRateLimit": True,
                         "sandbox": False,  # Always use live data, even in paper mode
                     }
@@ -75,12 +241,27 @@ class RealTriangularArbitrage:
             else:
                 raise ValueError(f"Unsupported exchange: {self.exchange_name}")
 
-            mode_desc = (
-                "paper (live prices)" if self.trading_mode == "paper" else "LIVE"
-            )
-            logger.info(
-                f"🔑 Exchange {self.exchange_name} configured in " f"{mode_desc} mode"
-            )
+            # Fetch real fees if FEE_SOURCE=auto
+            if self.fee_source == "auto":
+                try:
+                    if hasattr(self.exchange, "fetch_trading_fees"):
+                        fees = self.exchange.fetch_trading_fees()
+                        if fees and "maker" in fees and "taker" in fees:
+                            self.maker_fee = fees["maker"]
+                            self.taker_fee = fees["taker"]
+                            self.fee_source_actual = "auto"
+                    elif hasattr(self.exchange, "load_markets"):
+                        # Try getting from markets metadata
+                        self.exchange.load_markets()
+                        if self.exchange.markets:
+                            # Get fees from first market as fallback
+                            first_market = list(self.exchange.markets.values())[0]
+                            if "maker" in first_market and "taker" in first_market:
+                                self.maker_fee = first_market["maker"]
+                                self.taker_fee = first_market["taker"]
+                                self.fee_source_actual = "auto"
+                except Exception:
+                    pass  # Keep static fees
 
         except Exception as e:
             logger.error(f"❌ Failed to setup exchange: {e}")
@@ -89,8 +270,14 @@ class RealTriangularArbitrage:
     async def fetch_balances(self) -> Dict:
         """Fetch current account balances"""
         try:
-            # Fetch real balances from exchange
-            self.balances = self.exchange.fetch_balance()
+            # In paper mode without API keys, skip real balance fetch
+            if self.trading_mode == "paper" and not os.getenv(
+                f"{self.exchange_name.upper()}_API_KEY"
+            ):
+                self.balances = {}
+            else:
+                # Fetch real balances from exchange
+                self.balances = self.exchange.fetch_balance()
 
             # In paper mode, initialize paper balances on first fetch
             if self.trading_mode == "paper" and not self.paper_balances:
@@ -121,16 +308,15 @@ class RealTriangularArbitrage:
 
                 # If no meaningful balances found, initialize with test balances (stablecoins + major cryptos)
                 if use_test_balance:
-                    logger.info(
-                        "💰 No tradable balance found, initializing test balances"
-                    )
                     self.paper_balances = {}  # Clear any tiny balances
                     test_balances = {
-                        "USDT": 100.0,
-                        "USDC": 100.0,
+                        "USDT": self.paper_usdt,
+                        "USDC": self.paper_usdc,
+                        "USD": 100.0,
                         "BTC": 0.005,
                         "ETH": 0.05,
                         "SOL": 2.0,
+                        "DGB": 100.0,
                     }
                     for currency, amount in test_balances.items():
                         self.paper_balances[currency] = {
@@ -139,21 +325,10 @@ class RealTriangularArbitrage:
                             "total": amount,
                         }
 
-            # Display balances (paper or real)
+            # Return balances (paper or real)
             display_balances = (
                 self.paper_balances if self.trading_mode == "paper" else self.balances
             )
-            currency_count = 0
-            for currency, balance in display_balances.items():
-                if isinstance(balance, dict):
-                    total = balance.get("total")
-                    if total and total > 0:
-                        currency_count += 1
-                        logger.info(
-                            f"  💵 {currency}: {balance.get('free', 0):.6f} free, {total:.6f} total"
-                        )
-
-            logger.info(f"💰 Current balances: {currency_count} currencies")
             return display_balances
 
         except Exception as e:
@@ -161,34 +336,50 @@ class RealTriangularArbitrage:
             return {}
 
     async def execute_trade(
-        self, symbol: str, side: str, amount: float, price: Optional[float] = None
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        price: Optional[float] = None,
+        order_type: str = "taker",
     ) -> Dict:
-        """Execute a single trade"""
+        """Execute a single trade with maker or taker option"""
+        start_time = time.time()
+
         try:
             if self.trading_mode == "paper":
                 # Simulate trade execution with REAL bid/ask prices
-                # Get current market price for this symbol
                 if symbol in self.tickers:
                     ticker = self.tickers[symbol]
-                    if side == "buy":
-                        # When buying, you pay the ASK price (higher)
-                        # amount is in quote currency, filled is in base currency
-                        execution_price = ticker.get("ask", 1.0)
-                        filled_amount = (
-                            amount / execution_price if execution_price else amount
-                        )
-                    else:  # sell
-                        # When selling, you receive the BID price (lower)
-                        # amount is in base currency, filled is in quote currency
-                        execution_price = ticker.get("bid", 1.0)
-                        filled_amount = amount * execution_price
+                    if order_type == "maker":
+                        # Maker uses best bid/ask as limit price
+                        if side == "buy":
+                            execution_price = ticker.get("ask", 1.0)
+                            filled_amount = (
+                                amount / execution_price if execution_price else amount
+                            )
+                            fee_rate = self.maker_fee
+                        else:
+                            execution_price = ticker.get("bid", 1.0)
+                            filled_amount = amount * execution_price
+                            fee_rate = self.maker_fee
+                    else:  # taker
+                        if side == "buy":
+                            execution_price = ticker.get("ask", 1.0)
+                            filled_amount = (
+                                amount / execution_price if execution_price else amount
+                            )
+                            fee_rate = self.taker_fee
+                        else:
+                            execution_price = ticker.get("bid", 1.0)
+                            filled_amount = amount * execution_price
+                            fee_rate = self.taker_fee
                 else:
                     execution_price = 1.0
                     filled_amount = amount
+                    fee_rate = self.taker_fee
 
-                logger.info(
-                    f"📝 PAPER TRADE: {side} {amount} {symbol} @ {execution_price}"
-                )
+                latency_ms = (time.time() - start_time) * 1000
                 return {
                     "id": f"paper_{int(time.time())}",
                     "symbol": symbol,
@@ -197,27 +388,84 @@ class RealTriangularArbitrage:
                     "filled": filled_amount,
                     "price": execution_price,
                     "status": "closed",
-                    "fee": {"cost": filled_amount * 0.001},  # 0.1% fee on output
+                    "fee": {"cost": filled_amount * fee_rate},
+                    "order_type": order_type,
+                    "latency_ms": latency_ms,
                 }
 
             # Real trade execution
-            logger.info(f"🚀 LIVE TRADE: {side} {amount} {symbol}")
+            if order_type == "maker":
+                # Place limit order at best bid/ask
+                order_book = self.exchange.fetch_order_book(symbol, limit=1)
+                if side == "buy":
+                    limit_price = (
+                        order_book["asks"][0][0] if order_book["asks"] else None
+                    )
+                else:
+                    limit_price = (
+                        order_book["bids"][0][0] if order_book["bids"] else None
+                    )
 
-            # Place market order
+                if not limit_price:
+                    return None
+
+                order = self.exchange.create_limit_order(
+                    symbol=symbol, side=side, amount=amount, price=limit_price
+                )
+
+                # Wait for fill with timeout
+                wait_start = time.time()
+                while (time.time() - wait_start) * 1000 < self.max_leg_latency_ms:
+                    order_status = self.exchange.fetch_order(order["id"], symbol)
+                    if order_status["status"] == "closed":
+                        latency_ms = (time.time() - start_time) * 1000
+                        order_status["order_type"] = "maker"
+                        order_status["latency_ms"] = latency_ms
+                        return order_status
+                    await asyncio.sleep(0.1)
+
+                # Timeout - cancel and fallback to taker
+                self.exchange.cancel_order(order["id"], symbol)
+                self.execution_stats["maker_to_taker_fallbacks"] += 1
+                order_type = "taker"
+
+            # Taker execution
             order = self.exchange.create_market_order(
                 symbol=symbol, side=side, amount=amount
             )
-
-            logger.info(f"✅ Trade executed: {order['id']}")
+            latency_ms = (time.time() - start_time) * 1000
+            order["order_type"] = order_type
+            order["latency_ms"] = latency_ms
             return order
 
         except Exception as e:
             logger.error(f"❌ Trade failed: {e}")
             return None
 
-    async def execute_arbitrage_cycle(self, cycle: List[str], amount: float) -> Dict:
-        """Execute a complete arbitrage cycle"""
-        logger.info(f"🔄 Starting arbitrage cycle: {' -> '.join(cycle)}")
+    async def should_use_maker(self, symbol: str, side: str, size: float) -> bool:
+        """Determine if maker order is suitable for this leg"""
+        try:
+            # Check depth at top of book
+            order_book = self.exchange.fetch_order_book(symbol, limit=1)
+            book_side = order_book["asks"] if side == "buy" else order_book["bids"]
+
+            if not book_side:
+                return False
+
+            top_size = book_side[0][1]
+            return top_size >= size * 1.1  # 10% buffer
+
+        except Exception:
+            return False
+
+    async def execute_arbitrage_cycle(
+        self,
+        cycle: List[str],
+        amount: float,
+        legs_order_type: Optional[List[str]] = None,
+    ) -> Dict:
+        """Execute a complete arbitrage cycle with selective maker placement"""
+        cycle_str = " -> ".join(cycle)
 
         if amount > self.max_position_size:
             logger.warning(
@@ -244,49 +492,72 @@ class RealTriangularArbitrage:
             self.paper_balances[start_currency]["free"] -= amount
             self.paper_balances[start_currency]["total"] -= amount
 
+        leg_latencies = []
+        fee_mix = []
+
         try:
             for i in range(len(cycle) - 1):
                 from_currency = cycle[i]
                 to_currency = cycle[i + 1]
 
                 # Determine the correct trading pair and side
-                # If we want to go FROM -> TO, we need to either:
-                # - Buy TO/FROM (buy TO with FROM)
-                # - Sell FROM/TO (sell FROM for TO)
-
-                buy_pair = f"{to_currency}/{from_currency}"  # TO/FROM
-                sell_pair = f"{from_currency}/{to_currency}"  # FROM/TO
+                buy_pair = f"{to_currency}/{from_currency}"
+                sell_pair = f"{from_currency}/{to_currency}"
 
                 if buy_pair in self.symbols:
                     symbol = buy_pair
-                    side = "buy"  # Buy TO with FROM
+                    side = "buy"
                 elif sell_pair in self.symbols:
                     symbol = sell_pair
-                    side = "sell"  # Sell FROM for TO
+                    side = "sell"
                 else:
                     logger.error(
                         f"❌ No trading pair found for {from_currency} -> {to_currency}"
                     )
                     break
 
-                logger.info(
-                    f"  Step {i+1}: {from_currency} -> {to_currency} "
-                    f"({current_amount} {from_currency}) via {side} {symbol}"
+                # Determine order type: maker for legs 0 and 2, taker for leg 1
+                if legs_order_type:
+                    order_type = legs_order_type[i]
+                else:
+                    # Default: try maker for legs 1 and 3, taker for leg 2
+                    if i in [0, 2]:
+                        use_maker = await self.should_use_maker(
+                            symbol, side, current_amount
+                        )
+                        order_type = "maker" if use_maker else "taker"
+                    else:
+                        order_type = "taker"
+
+                # Execute trade with latency guard
+                trade = await leg_timed(
+                    self.execute_trade(
+                        symbol, side, current_amount, order_type=order_type
+                    ),
+                    timeout_ms=self.max_leg_latency_ms,
+                    label=f"Step {i+1} {from_currency}->{to_currency}",
                 )
 
-                trade = await self.execute_trade(symbol, side, current_amount)
                 if not trade:
                     logger.error(f"❌ Trade failed at step {i+1}")
+                    self.execution_stats["timeouts"] += 1
                     break
 
                 trades.append(trade)
+                leg_latencies.append(trade.get("latency_ms", 0))
+                fee_mix.append(trade.get("order_type", "taker"))
+
+                if trade.get("order_type") == "maker":
+                    self.execution_stats["maker_used_count"] += 1
 
                 # Update amount for next trade (subtract fees)
                 fee_info = trade.get("fee")
                 if fee_info and isinstance(fee_info, dict):
-                    fee = fee_info.get("cost", current_amount * 0.001)
+                    fee = fee_info.get("cost", current_amount * self.taker_fee)
                 else:
-                    fee = current_amount * 0.001  # Default 0.1% fee
+                    fee = (
+                        current_amount * self.taker_fee
+                    )  # Use exchange-specific taker fee
 
                 # Get the filled amount from the trade
                 filled_amount = trade.get("filled") or trade.get("amount")
@@ -322,9 +593,41 @@ class RealTriangularArbitrage:
             profit = current_amount - start_balance
             profit_percent = (profit / start_balance) * 100
 
-            logger.info("✅ Cycle completed!")
-            logger.info(f"💰 Final amount: {current_amount:.6f}")
-            logger.info(f"📈 Profit: {profit:+.6f} ({profit_percent:+.3f}%)")
+            # Track realized P&L in USD
+            realized_usd = profit
+            self.realized_pnl_usd += realized_usd
+
+            # Update equity after trade
+            cur, _, _ = self._equity_usd()
+            self.last_equity_usd = cur
+            self.equity_curve.append((time.time(), cur))
+
+            # Log compact execution line
+            fee_mix_str = "/".join(fee_mix[:3])
+            lat_str = (
+                f"{leg_latencies[0]:.0f}/{leg_latencies[1]:.0f}/{leg_latencies[2]:.0f}"
+                if len(leg_latencies) == 3
+                else "N/A"
+            )
+
+            print(
+                f"{time.strftime('%H:%M:%S')} {cycle_str} size={amount:.1f} "
+                f"fee_mix={fee_mix_str} net={profit_percent:+.3f}% "
+                f"lat_ms={lat_str} result=SUCCESS"
+            )
+
+            # Store trade metrics
+            self.trade_history.append(
+                {
+                    "time": time.time(),
+                    "cycle": cycle_str,
+                    "size_usd": amount,
+                    "fee_mix": fee_mix_str,
+                    "net_pct": profit_percent,
+                    "latencies_ms": leg_latencies,
+                    "success": True,
+                }
+            )
 
             return {
                 "success": True,
@@ -333,6 +636,8 @@ class RealTriangularArbitrage:
                 "profit": profit,
                 "profit_percent": profit_percent,
                 "trades": trades,
+                "leg_latencies": leg_latencies,
+                "fee_mix": fee_mix,
             }
 
         except Exception as e:
@@ -344,11 +649,17 @@ class RealTriangularArbitrage:
     ) -> Dict:
         """Check if there's enough liquidity in the order book for the trade"""
         try:
-            order_book = self.exchange.fetch_order_book(symbol, limit=10)
+            order_book = self.exchange.fetch_order_book(symbol, limit=self.depth_levels)
 
             # For buy orders, check asks (we need to buy from sellers)
             # For sell orders, check bids (we need to sell to buyers)
             orders = order_book["asks"] if side == "buy" else order_book["bids"]
+
+            if not orders:
+                return {"sufficient": False, "error": "Empty order book"}
+
+            # Get best price (top of book)
+            best_price = orders[0][0]
 
             cumulative_amount = 0.0
             weighted_price = 0.0
@@ -370,19 +681,152 @@ class RealTriangularArbitrage:
                     "available": cumulative_amount,
                     "needed": amount,
                     "avg_price": None,
+                    "best_price": best_price,
+                    "slippage_pct": None,
                 }
 
             avg_price = weighted_price / amount
+            # Slippage = (avg_execution_price - best_price) / best_price
+            slippage_pct = abs((avg_price - best_price) / best_price) * 100
+
             return {
                 "sufficient": True,
                 "available": cumulative_amount,
                 "needed": amount,
                 "avg_price": avg_price,
+                "best_price": best_price,
+                "slippage_pct": slippage_pct,
             }
 
         except Exception as e:
             logger.error(f"❌ Failed to check order book for {symbol}: {e}")
             return {"sufficient": False, "error": str(e)}
+
+    async def estimate_cycle_slippage(
+        self, cycle: List[str], amount_usd: float
+    ) -> float:
+        """Estimate total slippage across all legs using order book depth"""
+        books = []
+        amounts = []
+        current_amount = amount_usd
+
+        try:
+            for i in range(len(cycle) - 1):
+                from_currency = cycle[i]
+                to_currency = cycle[i + 1]
+
+                # Determine trading pair and side
+                buy_pair = f"{to_currency}/{from_currency}"
+                sell_pair = f"{from_currency}/{to_currency}"
+
+                if buy_pair in self.symbols:
+                    symbol = buy_pair
+                    side = "buy"
+                elif sell_pair in self.symbols:
+                    symbol = sell_pair
+                    side = "sell"
+                else:
+                    return 0.10  # Conservative penalty if pair not found
+
+                # Fetch order book
+                try:
+                    order_book = self.exchange.fetch_order_book(
+                        symbol, limit=self.depth_levels
+                    )
+                    books.append(order_book)
+
+                    # Convert to base currency amount for depth calculation
+                    if side == "buy":
+                        # Buying to_currency with from_currency
+                        base_amount = (
+                            current_amount / order_book["asks"][0][0]
+                            if order_book["asks"]
+                            else 0
+                        )
+                    else:
+                        # Selling from_currency for to_currency
+                        base_amount = current_amount
+
+                    amounts.append(base_amount)
+
+                    # Update amount for next leg (rough estimate)
+                    if order_book.get("asks") or order_book.get("bids"):
+                        best_price = (
+                            order_book["asks"][0][0]
+                            if side == "buy"
+                            else order_book["bids"][0][0]
+                        )
+                        current_amount = (
+                            current_amount * best_price
+                            if side == "sell"
+                            else current_amount / best_price
+                        )
+
+                except Exception as e:
+                    logger.error(f"Failed to fetch order book for {symbol}: {e}")
+                    return 0.10
+
+            # Use helper function to calculate slippage
+            return estimate_cycle_slippage_pct(books, amounts)
+
+        except Exception as e:
+            logger.error(f"❌ Failed to estimate slippage: {e}")
+            return 0.10  # Conservative penalty on error
+
+    async def compute_depth_limited_size(
+        self, cycle: List[str], max_size_usd: float
+    ) -> float:
+        """Compute maximum executable size based on order book depth"""
+        try:
+            min_size = max_size_usd
+
+            for i in range(len(cycle) - 1):
+                from_currency = cycle[i]
+                to_currency = cycle[i + 1]
+
+                # Determine trading pair and side
+                buy_pair = f"{to_currency}/{from_currency}"
+                sell_pair = f"{from_currency}/{to_currency}"
+
+                if buy_pair in self.symbols:
+                    symbol = buy_pair
+                    side = "buy"
+                elif sell_pair in self.symbols:
+                    symbol = sell_pair
+                    side = "sell"
+                else:
+                    return 0.0
+
+                # Fetch order book
+                order_book = self.exchange.fetch_order_book(
+                    symbol, limit=self.depth_levels
+                )
+                book_side = order_book["asks"] if side == "buy" else order_book["bids"]
+
+                if not book_side:
+                    return 0.0
+
+                best_price = book_side[0][0]
+
+                # Calculate depth-limited size for this leg
+                leg_max_size = depth_limited_size(
+                    book_side, best_price, max_slippage_pct=0.10
+                )
+
+                if leg_max_size == 0:
+                    return 0.0
+
+                # Convert to USD equivalent and track minimum
+                leg_max_usd = (
+                    leg_max_size * best_price if side == "sell" else leg_max_size
+                )
+                min_size = min(min_size, leg_max_usd)
+
+            return min_size
+
+        except Exception as e:
+            logger.error(f"❌ Failed to compute depth-limited size: {e}")
+            return 0.0
 
     async def find_arbitrage_opportunities(self) -> List[Dict]:
         """Find profitable arbitrage cycles"""
@@ -392,13 +836,12 @@ class RealTriangularArbitrage:
             self.symbols = list(self.exchange.markets.keys())
             self.tickers = self.exchange.fetch_tickers()
 
-            logger.info(f"📊 Analyzing {len(self.symbols)} trading pairs...")
-
             # Exclude fiat currencies except USD (keep stablecoins, allow USD as bridge)
             fiat_currencies = {"EUR", "GBP", "JPY", "CAD", "AUD", "CHF"}
 
-            # Build price graph
+            # Build price graph with symbol filtering
             self.graph.clear()
+            filtered_symbols = set()
 
             for symbol in self.symbols:
                 if symbol not in self.tickers:
@@ -410,6 +853,21 @@ class RealTriangularArbitrage:
                 # Skip pairs with fiat currencies
                 if base in fiat_currencies or quote in fiat_currencies:
                     continue
+
+                # Apply symbol allowlist if set
+                if self.symbol_allowlist:
+                    if (
+                        base not in self.symbol_allowlist
+                        or quote not in self.symbol_allowlist
+                    ):
+                        continue
+
+                # Apply exclusions
+                if base in self.exclude_symbols or quote in self.exclude_symbols:
+                    continue
+
+                filtered_symbols.add(base)
+                filtered_symbols.add(quote)
 
                 # Add edges for both directions
                 bid_price = ticker.get("bid")
@@ -428,14 +886,17 @@ class RealTriangularArbitrage:
 
             # Find profitable cycles using efficient triangular arbitrage search
             opportunities = []
+            all_cycles = []  # Track all cycles for debugging
             currencies = list(self.graph.nodes())
 
-            logger.info(
-                f"🔍 Checking {len(currencies)} currencies for triangular arbitrage..."
-            )
+            # Filter to only triangle_bases if specified
+            if self.triangle_bases:
+                base_currencies = [c for c in currencies if c in self.triangle_bases]
+            else:
+                base_currencies = currencies
 
             # Check triangular arbitrage: A -> B -> C -> A
-            for curr_a in currencies:
+            for curr_a in base_currencies:
                 # Find currencies we can trade to from A
                 if curr_a not in self.graph:
                     continue
@@ -456,22 +917,58 @@ class RealTriangularArbitrage:
                             cycle = [curr_a, curr_b, curr_c, curr_a]
 
                             # Calculate cycle profitability
-                            profit_ratio = self._calculate_cycle_profit(cycle)
-                            if profit_ratio and profit_ratio > (
-                                1 + self.min_profit_threshold / 100
-                            ):
-                                profit_percent = (profit_ratio - 1) * 100
-                                opportunities.append(
+                            gross_ratio = self._calculate_gross_cycle_profit(cycle)
+                            if gross_ratio:
+                                # Calculate net after fees and slippage
+                                gross_profit_pct = (gross_ratio - 1) * 100
+
+                                # Fees: 3 legs × taker fee
+                                fee_cost_pct = 3 * (self.taker_fee * 100)
+
+                                # For initial filtering, use conservative static slippage
+                                # Real slippage will be calculated when executing
+                                slippage_pct_estimate = 0.05
+
+                                # Net profit estimate
+                                net_profit_pct_estimate = (
+                                    gross_profit_pct
+                                    - fee_cost_pct
+                                    - slippage_pct_estimate
+                                )
+
+                                all_cycles.append(
                                     {
                                         "cycle": cycle,
-                                        "profit_percent": profit_percent,
-                                        "profit_ratio": profit_ratio,
+                                        "gross_profit_pct": gross_profit_pct,
+                                        "fee_cost_pct": fee_cost_pct,
+                                        "slippage_pct": slippage_pct_estimate,
+                                        "net_profit_pct": net_profit_pct_estimate,
+                                        "profit_ratio": gross_ratio,
                                     }
                                 )
 
-            # Sort by profitability
-            opportunities.sort(key=lambda x: x["profit_percent"], reverse=True)
-            logger.info(f"🎯 Found {len(opportunities)} profitable opportunities")
+                                # Only keep if net profit estimate exceeds threshold
+                                if net_profit_pct_estimate > self.min_profit_threshold:
+                                    opportunities.append(
+                                        {
+                                            "cycle": cycle,
+                                            "gross_profit_pct": gross_profit_pct,
+                                            "net_profit_pct": net_profit_pct_estimate,
+                                            "fee_cost_pct": fee_cost_pct,
+                                            "slippage_pct": slippage_pct_estimate,
+                                            "profit_ratio": gross_ratio,
+                                        }
+                                    )
+
+            # Sort all cycles
+            all_cycles.sort(key=lambda x: x["net_profit_pct"], reverse=True)
+
+            # Store for CSV logging and dedupe
+            self._last_scan_best = all_cycles[0] if all_cycles else None
+            self._all_cycles = all_cycles  # Store for caller to access
+
+            # Sort by net profitability
+            opportunities.sort(key=lambda x: x["net_profit_pct"], reverse=True)
 
             return opportunities[:5]  # Return top 5
 
@@ -479,13 +976,12 @@ class RealTriangularArbitrage:
             logger.error(f"❌ Failed to find opportunities: {e}")
             return []
 
-    def _calculate_cycle_profit(self, cycle: List[str]) -> Optional[float]:
-        """Calculate expected profit for a trading cycle"""
+    def _calculate_gross_cycle_profit(self, cycle: List[str]) -> Optional[float]:
+        """Calculate GROSS cycle profit (before fees and slippage)"""
         try:
             amount = 1.0
 
             # For cycle [A, B, C, A], we need 3 trades: A->B, B->C, C->A
-            # So iterate len(cycle) - 1 times
             for i in range(len(cycle) - 1):
                 from_curr = cycle[i]
                 to_curr = cycle[i + 1]
@@ -494,11 +990,6 @@ class RealTriangularArbitrage:
                     edge_data = self.graph[from_curr][to_curr]
                     rate = edge_data["rate"]
                     amount *= rate
-
-                    # Apply maker fees (0.16% per trade on Kraken for limit orders)
-                    # Standard users: 0.26% taker / 0.16% maker
-                    # Using limit orders (maker fees) to reduce costs
-                    amount *= 0.9984
                 else:
                     return None
 
@@ -507,28 +998,676 @@ class RealTriangularArbitrage:
         except Exception:
             return None
 
+    def _log_scan_to_csv(self, scan_num: int, above_threshold: int):
+        """Log scan data to CSV file"""
+        if not self._last_scan_best:
+            return
+
+        try:
+            import csv
+            from datetime import datetime
+
+            best = self._last_scan_best
+            cycle_str = " -> ".join(best["cycle"])
+
+            with open("logs/opps.csv", "a", newline="") as f:
+                writer = csv.writer(f)
+                # Write header if file is new
+                if f.tell() == 0:
+                    cols = [
+                        "timestamp",
+                        "scan",
+                        "cycle",
+                        "gross_pct",
+                        "fee_pct",
+                        "slip_pct",
+                        "net_pct",
+                        "above_threshold",
+                    ]
+                    if self.ema_gross is not None:
+                        cols.extend(["ema15_gross", "ema15_net"])
+                    writer.writerow(cols)
+
+                row = [
+                    datetime.now().isoformat(),
+                    scan_num,
+                    cycle_str,
+                    f"{best['gross_profit_pct']:.4f}",
+                    f"{best['fee_cost_pct']:.2f}",
+                    f"{best['slippage_pct']:.2f}",
+                    f"{best['net_profit_pct']:.4f}",
+                    1 if above_threshold > 0 else 0,
+                ]
+                if self.ema_gross is not None:
+                    row.extend([f"{self.ema_gross:.4f}", f"{self.ema_net:.4f}"])
+                writer.writerow(row)
+        except Exception as e:
+            logger.error(f"CSV logging error: {e}")
+
+    def _log_near_miss_to_csv(self, scan_num: int, best):
+        """Log near-miss data to CSV file"""
+        try:
+            import csv
+            from datetime import datetime
+
+            cycle_str = " -> ".join(best["cycle"])
+            shortfall_bps = (self.min_profit_threshold - best["net_profit_pct"]) * 100
+
+            with open("logs/near_miss.csv", "a", newline="") as f:
+                writer = csv.writer(f)
+                # Write header if file is new
+                if f.tell() == 0:
+                    writer.writerow(
+                        [
+                            "timestamp",
+                            "scan",
+                            "cycle",
+                            "gross_pct",
+                            "fee_pct",
+                            "slip_pct",
+                            "net_pct",
+                            "threshold",
+                            "shortfall_bps",
+                        ]
+                    )
+
+                writer.writerow(
+                    [
+                        datetime.now().isoformat(),
+                        scan_num,
+                        cycle_str,
+                        f"{best['gross_profit_pct']:.4f}",
+                        f"{best['fee_cost_pct']:.2f}",
+                        f"{best['slippage_pct']:.2f}",
+                        f"{best['net_profit_pct']:.4f}",
+                        f"{self.min_profit_threshold:.2f}",
+                        f"{shortfall_bps:.2f}",
+                    ]
+                )
+        except Exception as e:
+            logger.error(f"Near-miss CSV logging error: {e}")
+
+    def _equity_usd(self):
+        """Calculate total equity in USD (mark-to-market)"""
+        total = 0.0
+        priced = 0
+        unpriced = 0
+        bals = self.paper_balances if self.trading_mode == "paper" else self.balances
+
+        # Ensure tickers are available
+        if not getattr(self, "tickers", None):
+            try:
+                self.tickers = self.exchange.fetch_tickers()
+            except Exception:
+                self.tickers = {}
+
+        def price(symbol):
+            """Get USD price for a symbol"""
+            p = None
+            s1 = f"{symbol}/USD"
+            s2 = f"{symbol}/USDT"
+            t1 = self.tickers.get(s1)
+            t2 = self.tickers.get(s2)
+            if t1 and t1.get("bid"):
+                p = t1["bid"]
+            elif t2 and t2.get("bid"):
+                p = t2["bid"]  # assume USDT=$1
+            return p
+
+        for asset, v in (bals or {}).items():
+            amt = v.get("total") if isinstance(v, dict) else (v or 0.0)
+            if not amt:
+                continue
+            if asset in ("USD", "USDT", "USDC"):
+                total += float(amt) * 1.0
+                priced += 1
+            else:
+                p = price(asset)
+                if p:
+                    total += float(amt) * float(p)
+                    priced += 1
+                else:
+                    unpriced += 1
+
+        return total, priced, unpriced
+
+    def print_summary(self):
+        """Print compact session summary"""
+        print("\n" + "=" * 60)
+        print("SESSION SUMMARY")
+        print("=" * 60)
+
+        # Execution stats
+        print(f"Attempts:         {self.execution_stats['attempts']}")
+        print(f"Full fills:       {self.execution_stats['full_fills']}")
+        print(f"Partial fills:    {self.execution_stats['partial_fills']}")
+        print(f"Cancels:          {self.execution_stats['cancels']}")
+        print(f"Depth rejects:    {self.execution_stats['depth_rejects']}")
+        print(f"Slippage rejects: {self.execution_stats['slippage_rejects']}")
+        print(f"Timeouts:         {self.execution_stats['timeouts']}")
+        print(f"Maker used:       {self.execution_stats['maker_used_count']}")
+        print(f"Maker fallbacks:  {self.execution_stats['maker_to_taker_fallbacks']}")
+
+        # Trade metrics
+        if self.trade_history:
+            net_edges = [t["net_pct"] for t in self.trade_history]
+            avg_net = sum(net_edges) / len(net_edges)
+
+            all_latencies = []
+            for t in self.trade_history:
+                all_latencies.extend(t["latencies_ms"])
+
+            if all_latencies:
+                import statistics
+
+                median_lat = statistics.median(all_latencies)
+
+                print(f"\nFilled trades:    {len(self.trade_history)}")
+                print(f"Avg net edge:     {avg_net:+.3f}%")
+                print(f"Median leg lat:   {median_lat:.0f}ms")
+
+                # Maker usage rate
+                maker_legs = sum(
+                    t["fee_mix"].count("maker") for t in self.trade_history
+                )
+                total_legs = len(self.trade_history) * 3
+                if total_legs > 0:
+                    maker_rate = (maker_legs / total_legs) * 100
+                    print(f"Maker usage:      {maker_rate:.1f}%")
+
+        # USD P&L section
+        print("\nDOLLARS")
+        print(f"  Realized P&L:   ${self.realized_pnl_usd:+.2f}")
+        avg_hyp = (
+            (self.hyp_best_pnl_usd_sum / self.hyp_best_count)
+            if self.hyp_best_count
+            else 0.0
+        )
+        print(
+            f"  Hypothetical (best/scan): total ${self.hyp_best_pnl_usd_sum:+.2f} | avg/scan ${avg_hyp:+.2f}"
+        )
+        if self.evs:
+            ev_scan = sum(self.evs) / len(self.evs)
+            if self.ev_day_factor:
+                scans_per_day = 86400 / max(1, self.poll_sec)
+                print(
+                    f"  EV: per-scan ${ev_scan:+.2f} | "
+                    f"per-day ${ev_scan * scans_per_day:+.0f} "
+                    f"(at POLL_SEC={self.poll_sec})"
+                )
+            else:
+                print(f"  EV: per-scan ${ev_scan:+.2f}")
+
+        # Reason buckets
+        if self.reason_buckets:
+            total_rejects = (
+                self.reject_by_threshold
+                + self.reject_by_fees
+                + self.reject_by_slip
+                + self.reject_by_depth
+            )
+            if total_rejects > 0:
+                print(
+                    f"\nREASONS (scans): threshold={self.reject_by_threshold}, "
+                    f"fees={self.reject_by_fees}, slip={self.reject_by_slip}, "
+                    f"depth={self.reject_by_depth}"
+                )
+
+                # Find primary blocker
+                reasons = {
+                    "threshold": self.reject_by_threshold,
+                    "fees": self.reject_by_fees,
+                    "slip": self.reject_by_slip,
+                    "depth": self.reject_by_depth,
+                }
+                primary_blocker = max(reasons, key=reasons.get)
+                print(f"primary blocker: {primary_blocker}")
+
+                # If no fills, add message
+                if self.execution_stats["full_fills"] == 0:
+                    print(f"No fills this session. Primary blocker: {primary_blocker}.")
+
+        # Money summary
+        print("\nMONEY SUMMARY")
+        end_eq = (
+            self.last_equity_usd
+            if self.last_equity_usd is not None
+            else self.start_equity_usd
+        )
+        delta = (
+            (end_eq - self.start_equity_usd)
+            if (self.start_equity_usd is not None and end_eq is not None)
+            else 0.0
+        )
+        deltap = (
+            (delta / self.start_equity_usd * 100.0) if self.start_equity_usd else 0.0
+        )
+        print(f"  Start equity:   ${self.start_equity_usd:,.{self.equity_precision}f}")
+        print(f"  End equity:     ${end_eq:,.{self.equity_precision}f}")
+        print(
+            f"  Change:         ${delta:+,.{self.equity_precision}f} ({deltap:+.2f}%)"
+        )
+        print(f"  Realized P&L:   ${self.realized_pnl_usd:+,.{self.equity_precision}f}")
+
+        # Max drawdown
+        if len(self.equity_curve) >= 2:
+            peak = self.equity_curve[0][1]
+            mdd = 0.0
+            for _, eq in self.equity_curve:
+                if eq > peak:
+                    peak = eq
+                dd = (eq - peak) / peak if peak else 0.0
+                if dd < mdd:
+                    mdd = dd
+            print(f"  Max drawdown:   {mdd*100:.2f}%")
+
+        print("=" * 60)
+
     async def run_trading_session(self, max_trades: int = None):
         """Run continuous automated arbitrage trading session"""
-        logger.info(f"🚀 Starting continuous trading session ({self.trading_mode} mode)")
-        logger.info(f"💰 Max position size: ${self.max_position_size}")
-        logger.info(f"📊 Min profit threshold: {self.min_profit_threshold}%")
-        logger.info("💡 Press Ctrl+C to stop")
+        fee_source_label = f"(source: {self.fee_source_actual})"
+        fee_mix_desc = (
+            "(mix: m/t/m planned)" if self.maker_fee != self.taker_fee else ""
+        )
+        print(
+            f"🏦 {self.exchange_name.upper()} | "
+            f"Fees: {self.maker_fee*100:.2f}%m/{self.taker_fee*100:.2f}%t "
+            f"{fee_source_label} {fee_mix_desc}| Mode: {self.trading_mode}"
+        )
+        if self.run_min > 0:
+            print(f"⏱️  Timeboxed: {self.run_min} min")
+        print("💡 Press Ctrl+C to stop\n")
 
         await self.fetch_balances()
 
+        # Calculate and display starting equity
+        self.start_equity_usd, priced, unpriced = self._equity_usd()
+        self.last_equity_usd = self.start_equity_usd
+        self.equity_curve.append((time.time(), self.start_equity_usd))
+        print(
+            f"🏁 Start equity: ${self.start_equity_usd:,.{self.equity_precision}f} "
+            f"(priced {priced}, unpriced {unpriced})\n"
+        )
+
+        # Load markets to get universe stats
+        self.exchange.load_markets()
+
+        # Apply filtering to count filtered universe
+        filtered_count = 0
+        fiat_currencies = {"EUR", "GBP", "JPY", "CAD", "AUD", "CHF"}
+        for symbol in self.exchange.markets.keys():
+            if "/" not in symbol:
+                continue
+            base, quote = symbol.split("/")
+            if base in fiat_currencies or quote in fiat_currencies:
+                continue
+            if self.symbol_allowlist:
+                if (
+                    base not in self.symbol_allowlist
+                    or quote not in self.symbol_allowlist
+                ):
+                    continue
+            if base in self.exclude_symbols or quote in self.exclude_symbols:
+                continue
+            filtered_count += 1
+
+        # Count potential triangles (filtered symbols)
+        filtered_symbols_set = set()
+        for symbol in self.exchange.markets.keys():
+            if "/" not in symbol:
+                continue
+            base, quote = symbol.split("/")
+            if base in fiat_currencies or quote in fiat_currencies:
+                continue
+            if self.symbol_allowlist:
+                if (
+                    base not in self.symbol_allowlist
+                    or quote not in self.symbol_allowlist
+                ):
+                    continue
+            if base in self.exclude_symbols or quote in self.exclude_symbols:
+                continue
+            filtered_symbols_set.add(base)
+            filtered_symbols_set.add(quote)
+
+        # Rough triangle count: N choose 3 for filtered symbols
+        n_symbols = len(filtered_symbols_set)
+        approx_triangles = (
+            (n_symbols * (n_symbols - 1) * (n_symbols - 2)) // 6
+            if n_symbols >= 3
+            else 0
+        )
+
+        bases_str = ",".join(self.triangle_bases) if self.triangle_bases else "any"
+        print(
+            f"🌐 Universe: {n_symbols} symbols, ~{approx_triangles} triangles (bases: {bases_str})\n"
+        )
+
         trade_num = 0
+        start_time = time.time()
         try:
             while True:
+                # Check timebox
+                elapsed_min = (time.time() - start_time) / 60
+                if self.run_min > 0 and elapsed_min >= self.run_min:
+                    print(f"\n⏱️  Timebox reached ({elapsed_min:.1f} min)")
+                    break
+
                 trade_num += 1
-                logger.info(f"\n🔍 Scan {trade_num}")
+
+                # Show timebox ETA if applicable
+                if self.run_min > 0:
+                    print(
+                        f"🔍 Scan {trade_num} | ⏱ timeboxed {self.run_min}m | "
+                        f"elapsed {elapsed_min:.1f}m | scans {trade_num}",
+                        end=" ",
+                        flush=True,
+                    )
+                else:
+                    print(f"🔍 Scan {trade_num}", end=" ", flush=True)
 
                 opportunities = await self.find_arbitrage_opportunities()
 
+                # Update EMA with best opportunity
+                if self._last_scan_best:
+                    best = self._last_scan_best
+                    if self.ema_gross is None:
+                        # Initialize EMA
+                        self.ema_gross = best["gross_profit_pct"]
+                        self.ema_net = best["net_profit_pct"]
+                    else:
+                        # Update EMA: EMA = alpha * new + (1 - alpha) * old
+                        self.ema_gross = (
+                            self.ema_alpha * best["gross_profit_pct"]
+                            + (1 - self.ema_alpha) * self.ema_gross
+                        )
+                        self.ema_net = (
+                            self.ema_alpha * best["net_profit_pct"]
+                            + (1 - self.ema_alpha) * self.ema_net
+                        )
+
+                # Log to CSV if in debug mode
+                if self.verbosity == "debug" and self._last_scan_best:
+                    self._log_scan_to_csv(trade_num, len(opportunities))
+
+                # Dedupe logic: compute key and net for change detection
+                all_cycles = getattr(self, "_all_cycles", [])
+                best = all_cycles[0] if all_cycles else None
+                key = None if not best else " / ".join(best["cycle"][:3])
+                net = None if not best else best["net_profit_pct"]
+
+                # Determine if we should print detailed output
+                def should_print():
+                    if not self.dedupe or best is None:
+                        return True
+                    if self._last_key is None:
+                        return True
+                    # print if cycle changed
+                    if key != self._last_key:
+                        return True
+                    # print if net moved by >= CHANGE_BPS (in %)
+                    if abs(net - self._last_net) >= (self.change_bps / 100):
+                        return True
+                    # heartbeat
+                    if (trade_num % self.print_every_n) == 0:
+                        return True
+                    return False
+
+                # Calculate execution size for USD P&L (do this before should_print so it's available for all scans)
+                size_usd = self.max_position_size  # Default hypothetical
+                size_label = "(hyp)"
+                if best is not None:
+                    # Try to get actual executable size
+                    start_currency = best["cycle"][0]
+                    check_balances = (
+                        self.paper_balances
+                        if self.trading_mode == "paper"
+                        else self.balances
+                    )
+                    available = (
+                        check_balances.get(start_currency, {}).get("free", 0)
+                        if check_balances
+                        else 0
+                    )
+                    if available > 0:
+                        size_usd = min(self.max_position_size, available)
+                        size_label = ""
+
+                # Print output based on dedupe decision
+                if should_print():
+                    # Calculate USD P&L and EV
+                    best_pnl_usd = 0.0
+                    if best is not None:
+                        best_net = best["net_profit_pct"]
+                        best_pnl_usd = size_usd * (best_net / 100.0)
+                        self.hyp_best_pnl_usd_sum += best_pnl_usd
+                        self.hyp_best_count += 1
+
+                        # EV calculation
+                        if self.ev_only_above_thr:
+                            ev_usd = (
+                                best_pnl_usd
+                                if best_net >= self.min_profit_threshold
+                                else 0.0
+                            )
+                        else:
+                            ev_usd = best_pnl_usd
+                        self.evs.append(ev_usd)
+                        if len(self.evs) > self.ev_window:
+                            self.evs.pop(0)
+
+                    # Print "(unchanged × N)" if we skipped scans
+                    if self._repeat > 0:
+                        print(f"  (unchanged × {self._repeat})")
+                        self._repeat = 0
+
+                    # Print detailed scan output
+                    if all_cycles and self.verbosity != "quiet":
+                        print()
+                        topn = min(self.topn, len(all_cycles))
+                        for i, opp in enumerate(all_cycles[:topn], 1):
+                            cycle_str = " -> ".join(opp["cycle"][:3])
+                            print(
+                                f"  {i}. {cycle_str}: "
+                                f"gross={opp['gross_profit_pct']:+.2f}% "
+                                f"fees={opp['fee_cost_pct']:.2f}% "
+                                f"net={opp['net_profit_pct']:+.2f}%"
+                            )
+
+                        # Show why line if 0 opportunities above threshold
+                        if len(opportunities) == 0 and all_cycles:
+                            best_opp = all_cycles[0]
+                            shortfall = (
+                                self.min_profit_threshold - best_opp["net_profit_pct"]
+                            )
+                            print(
+                                f"  ✗ why: best_net={best_opp['net_profit_pct']:+.2f}% "
+                                f"(< thr by {shortfall:.2f}%), "
+                                f"gross={best_opp['gross_profit_pct']:+.2f}% – "
+                                f"fees={best_opp['fee_cost_pct']:.2f}% – "
+                                f"slip={best_opp['slippage_pct']:.2f}%"
+                            )
+
+                            # Track reason buckets
+                            if self.reason_buckets:
+                                if (
+                                    best_opp["fee_cost_pct"]
+                                    >= best_opp["gross_profit_pct"]
+                                ):
+                                    self.reject_by_fees += 1
+                                elif best_opp["slippage_pct"] >= (
+                                    best_opp["gross_profit_pct"]
+                                    - best_opp["fee_cost_pct"]
+                                ):
+                                    self.reject_by_slip += 1
+                                elif (
+                                    best_opp["net_profit_pct"] + 1e-9
+                                ) < self.min_profit_threshold:
+                                    self.reject_by_threshold += 1
+
+                            # Check for near-miss
+                            if 0 < shortfall <= self.near_miss_bps:
+                                gap = shortfall
+                                print(
+                                    f"  ⚑ near-miss: best_net={best_opp['net_profit_pct']:+.2f}% "
+                                    f"(short {gap:.2f}%), "
+                                    f"gross={best_opp['gross_profit_pct']:+.2f}% – "
+                                    f"fees={best_opp['fee_cost_pct']:.2f}% – "
+                                    f"slip={best_opp['slippage_pct']:.2f}%"
+                                )
+                                # Log to CSV
+                                os.makedirs("logs", exist_ok=True)
+                                self._log_near_miss_to_csv(trade_num, best_opp)
+
+                        print(
+                            f"  → {len(opportunities)} above {self.min_profit_threshold}% threshold",
+                            end="",
+                        )
+
+                        # Show EMA stats if available
+                        if self.ema_gross is not None and self.verbosity in [
+                            "normal",
+                            "debug",
+                        ]:
+                            print(
+                                f" | EMA15 gross={self.ema_gross:.2f}% net={self.ema_net:.2f}%",
+                                end="",
+                            )
+
+                        # Show deltas if enabled and comparable
+                        if self.show_delta and best is not None:
+                            delta_net = None
+                            delta_gross = None
+                            if (
+                                self._last_print_key is not None
+                                and key == self._last_print_key
+                            ):
+                                if self._last_print_net is not None:
+                                    delta_net = net - self._last_print_net
+                                if self._last_print_gross is not None:
+                                    delta_gross = (
+                                        best["gross_profit_pct"]
+                                        - self._last_print_gross
+                                    )
+
+                            delta_parts = []
+                            if delta_net is not None:
+                                delta_parts.append(f"Δnet={delta_net:+.02f}%")
+                            if delta_gross is not None:
+                                delta_parts.append(f"Δgross={delta_gross:+.02f}%")
+
+                            if delta_parts:
+                                print(f" | {' '.join(delta_parts)}", end="")
+
+                        # Show USD P&L and EV
+                        if self.show_usd and best is not None:
+                            print(
+                                f" | size≈${size_usd:.0f}{size_label} hyp_P&L=${best_pnl_usd:+.2f}",
+                                end="",
+                            )
+
+                            # Show EV if available
+                            if self.evs:
+                                ev_scan = sum(self.evs) / len(self.evs)
+                                if self.ev_day_factor:
+                                    scans_per_day = 86400 / max(1, self.poll_sec)
+                                    ev_day = ev_scan * scans_per_day
+                                    print(
+                                        f" | EV/scan=${ev_scan:+.2f} EV/day=${ev_day:+.0f}",
+                                        end="",
+                                    )
+                                else:
+                                    print(f" | EV/scan=${ev_scan:+.2f}", end="")
+
+                        print()  # newline
+
+                        # Debug mode: show top 10 table
+                        if self.verbosity == "debug":
+                            print("  DEBUG: Top 10 cycles:")
+                            for i, opp in enumerate(all_cycles[:10], 1):
+                                cycle_str = " -> ".join(opp["cycle"])
+                                print(
+                                    f"    {i:2d}. {cycle_str:40s} "
+                                    f"g={opp['gross_profit_pct']:+.3f}% "
+                                    f"f={opp['fee_cost_pct']:.2f}% "
+                                    f"s={opp['slippage_pct']:.2f}% "
+                                    f"n={opp['net_profit_pct']:+.3f}%"
+                                )
+
+                    # Update state
+                    self._last_key = key
+                    self._last_net = net
+
+                    # Update last printed values for delta calculation
+                    if best is not None:
+                        self._last_print_key = key
+                        self._last_print_net = net
+                        self._last_print_gross = best["gross_profit_pct"]
+
+                else:
+                    # Skipping detailed output - increment repeat counter
+                    self._repeat += 1
+                    # Always print a minimal status line so user knows bot is alive
+                    if net is not None:
+                        print(f"| best_net={net:+.2f}% (unchanged)")
+                    else:
+                        print("| (scanning...)")
+
+                # Check if we should continue or execute
                 if not opportunities:
-                    logger.info("😔 No profitable opportunities found")
-                    logger.info("🔄 Continuing to search...")
-                    await asyncio.sleep(10)
+                    # Periodic equity heartbeat
+                    if (trade_num % self.equity_every_n) == 0:
+                        cur, priced, unpriced = self._equity_usd()
+                        self.last_equity_usd = cur
+                        self.equity_curve.append((time.time(), cur))
+                        delta = cur - self.start_equity_usd
+                        deltap = (
+                            (delta / self.start_equity_usd * 100.0)
+                            if self.start_equity_usd
+                            else 0.0
+                        )
+                        print(
+                            f"💼 Equity: ${cur:,.{self.equity_precision}f} "
+                            f"(Δ ${delta:+,.{self.equity_precision}f}, {deltap:+.2f}%)"
+                        )
+
+                        # CSV logging if debug
+                        if self.verbosity == "debug":
+                            os.makedirs("logs", exist_ok=True)
+                            try:
+                                import csv
+                                from datetime import datetime
+
+                                with open("logs/equity.csv", "a", newline="") as f:
+                                    writer = csv.writer(f)
+                                    if f.tell() == 0:
+                                        writer.writerow(
+                                            [
+                                                "timestamp",
+                                                "scan",
+                                                "equity_usd",
+                                                "delta_usd",
+                                                "delta_pct",
+                                            ]
+                                        )
+                                    writer.writerow(
+                                        [
+                                            datetime.now().isoformat(),
+                                            trade_num,
+                                            f"{cur:.{self.equity_precision}f}",
+                                            f"{delta:+.{self.equity_precision}f}",
+                                            f"{deltap:+.2f}",
+                                        ]
+                                    )
+                            except Exception as e:
+                                logger.error(f"Equity CSV logging error: {e}")
+
+                    await asyncio.sleep(self.poll_sec)
                     continue
+
+                # If we have opportunities, print now (dedupe already handled above)
+                if self.verbosity == "quiet" and should_print():
+                    print(f"| {len(opportunities)} above threshold")
 
                 # Filter opportunities to only those starting with currencies we own
                 owned_currencies = set()
@@ -552,12 +1691,10 @@ class RealTriangularArbitrage:
                                 # Strip .F suffix that Kraken adds to some currencies
                                 normalized_currency = currency.replace(".F", "")
                                 owned_currencies.add(normalized_currency)
-                                logger.info(
-                                    f"  ✅ Will trade with: {normalized_currency} ({free_balance:.6f})"
-                                )
 
                 if owned_currencies:
-                    logger.info(f"💼 You own: {', '.join(sorted(owned_currencies))}")
+                    if self.verbosity == "debug":
+                        logger.info(f"💼 You own: {', '.join(sorted(owned_currencies))}")
                     # Filter to opportunities starting with owned currencies
                     viable_opportunities = [
                         opp
@@ -569,22 +1706,30 @@ class RealTriangularArbitrage:
                             "😔 No opportunities starting with your owned currencies"
                         )
                         logger.info("🔄 Continuing to search...")
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(self.poll_sec)
                         continue
                     opportunities = viable_opportunities
 
                 # Execute ALL profitable opportunities in this scan, not just the best one
-                logger.info(f"🎯 Found {len(opportunities)} opportunities to execute")
+                if self.verbosity == "debug":
+                    logger.info(
+                        f"🎯 Found {len(opportunities)} opportunities to execute"
+                    )
                 executed_count = 0
 
                 for opp_idx, opportunity in enumerate(opportunities):
                     cycle = opportunity["cycle"]
-                    expected_profit = opportunity["profit_percent"]
+                    net_profit = opportunity["net_profit_pct"]
+                    gross_profit = opportunity["gross_profit_pct"]
+                    fee_cost_pct = opportunity["fee_cost_pct"]
 
-                    logger.info(
-                        f"\n📊 Opportunity {opp_idx + 1}/{len(opportunities)}: {' -> '.join(cycle)}"
-                    )
-                    logger.info(f"📈 Expected profit: {expected_profit:.3f}%")
+                    if self.verbosity == "debug":
+                        logger.info(
+                            f"\n📊 Opportunity {opp_idx + 1}/{len(opportunities)}: {' -> '.join(cycle)}"
+                        )
+                        logger.info(
+                            f"📈 Expected profit: gross={gross_profit:.3f}% net={net_profit:.3f}%"
+                        )
 
                     # Check if we have enough balance for this opportunity
                     start_currency = cycle[0]
@@ -597,12 +1742,19 @@ class RealTriangularArbitrage:
                         "free", 0
                     )
 
+                    # Balance-cap if needed
+                    execution_size = self.max_position_size
                     if available_balance < self.max_position_size:
-                        logger.warning(
-                            f"⚠️ Insufficient {start_currency} balance "
-                            f"({available_balance:.2f} < {self.max_position_size}), skipping"
+                        execution_size = available_balance
+                        print(
+                            f"  ⚠️  balance-cap: need ${self.max_position_size:.2f}, "
+                            f"have ${available_balance:.2f}, sizing to ${execution_size:.2f}"
                         )
-                        continue
+                        if execution_size < 10:  # Skip if too small
+                            logger.warning(
+                                f"⚠️ Balance too small ({execution_size:.2f}), skipping"
+                            )
+                            continue
 
                     # Skip order book depth check in paper trading mode
                     if self.trading_mode == "paper":
@@ -668,24 +1820,61 @@ class RealTriangularArbitrage:
                             )
                             continue
 
-                    if expected_profit > self.min_profit_threshold:
-                        result = await self.execute_arbitrage_cycle(
-                            cycle, self.max_position_size
-                        )
+                    # Track attempt
+                    self.execution_stats["attempts"] += 1
 
-                        if result.get("success"):
-                            executed_count += 1
-                            logger.info(
-                                f"✅ Opportunity {opp_idx + 1} executed successfully!"
-                            )
-                            # Update balances after successful trade
-                            await self.fetch_balances()
-                        else:
-                            logger.error(f"❌ Opportunity {opp_idx + 1} failed")
-                    else:
-                        logger.info(
-                            f"⏭️ Skipping - profit {expected_profit:.3f}% below threshold"
+                    # Check depth-limited size
+                    logger.info("📏 Computing depth-limited size...")
+                    depth_limited_size_usd = await self.compute_depth_limited_size(
+                        cycle, self.max_position_size
+                    )
+
+                    if depth_limited_size_usd < self.max_position_size * 0.5:
+                        logger.warning(
+                            f"   ⚠️ REJECT: Depth-limited size ${depth_limited_size_usd:.2f} "
+                            f"< 50% of max (${self.max_position_size})"
                         )
+                        self.execution_stats["depth_rejects"] += 1
+                        continue
+
+                    # Use depth-limited size for execution
+                    execution_size = depth_limited_size_usd
+                    logger.info(f"   ✅ Depth-limited size: ${execution_size:.2f}")
+
+                    # Validate with REAL slippage from order book depth
+                    logger.info("📖 Checking real slippage from order book...")
+                    real_slippage = await self.estimate_cycle_slippage(
+                        cycle, execution_size
+                    )
+
+                    # Recalculate net profit with real slippage
+                    real_net_profit = gross_profit - fee_cost_pct - real_slippage
+                    logger.info(
+                        f"   Real slippage: {real_slippage:.3f}% → net profit: {real_net_profit:.3f}%"
+                    )
+
+                    # Reject if real slippage kills the edge
+                    if real_net_profit < self.min_profit_threshold:
+                        logger.warning(
+                            f"   ⚠️ REJECT: Real net profit {real_net_profit:.3f}% below threshold"
+                        )
+                        self.execution_stats["slippage_rejects"] += 1
+                        continue
+
+                    # Execute with depth-limited size
+                    result = await self.execute_arbitrage_cycle(cycle, execution_size)
+
+                    if result.get("success"):
+                        executed_count += 1
+                        self.execution_stats["full_fills"] += 1
+                        logger.info(
+                            f"✅ Opportunity {opp_idx + 1} executed successfully!"
+                        )
+                        # Update balances after successful trade
+                        await self.fetch_balances()
+                    else:
+                        logger.error(f"❌ Opportunity {opp_idx + 1} failed")
+                        self.execution_stats["cancels"] += 1
 
                 logger.info(
                     f"\n✅ Executed {executed_count}/{len(opportunities)} "
@@ -697,11 +1886,12 @@ class RealTriangularArbitrage:
                 await asyncio.sleep(15)
 
         except KeyboardInterrupt:
-            logger.info(f"\n🛑 Trading session stopped by user after {trade_num} scans")
+            print(f"\n\n🛑 Stopped after {trade_num} scans")
         except Exception as e:
             logger.error(f"❌ Trading session error: {e}")
 
-        logger.info("🏁 Trading session completed")
+        # Print compact summary
+        self.print_summary()
 
 
 async def main():
@@ -716,12 +1906,20 @@ async def main():
     if trading_mode == "live":
         print("⚠️ WARNING: LIVE TRADING MODE ENABLED ⚠️")
         print("This will trade with real money!")
+
+        # Check LIVE_CONFIRM env var
+        live_confirm = os.getenv("LIVE_CONFIRM", "NO").upper()
+        if live_confirm != "YES":
+            print("❌ LIVE_CONFIRM env variable must be set to 'YES' for live trading")
+            print("   Set: export LIVE_CONFIRM=YES")
+            return
+
         confirmation = input("Type 'YES' to continue: ")
         if confirmation != "YES":
             print("Trading cancelled.")
             return
 
-    exchanges_to_try = ["kraken", "coinbase", "binance"]
+    exchanges_to_try = ["binanceus", "kraken", "kucoin", "coinbase"]
 
     for exchange_name in exchanges_to_try:
         try:

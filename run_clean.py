@@ -33,8 +33,6 @@ def run_arbitrage():
     load_dotenv()
 
     clear_database()
-
-    print("🚀 Initializing arbitrage trading system...")
     print()
 
     # Check for command line argument
@@ -91,13 +89,14 @@ def run_arbitrage():
     max_position = os.getenv("MAX_POSITION_SIZE", "100")
     min_profit = os.getenv("MIN_PROFIT_THRESHOLD", "0.5")
 
-    print(f"💰 Max position size: ${max_position}")
-    print(f"📊 Min profit threshold: {min_profit}%")
-    print("🎯 Monitoring markets for arbitrage opportunities...")
-    print("📊 Reporting interval: every 2 seconds\n")
+    print(f"💰 Position: ${max_position} | Threshold: {min_profit}% NET")
+    print()
 
     # Run directly without subprocess
-    asyncio.run(run_arbitrage_direct(trading_mode))
+    try:
+        asyncio.run(run_arbitrage_direct(trading_mode))
+    except KeyboardInterrupt:
+        pass  # Clean exit, summary already printed
 
 
 async def run_arbitrage_direct(trading_mode):
@@ -105,7 +104,7 @@ async def run_arbitrage_direct(trading_mode):
 
     if trading_mode == "live":
         # Use real trading system with API
-        exchanges_to_try = ["kraken", "coinbase", "binance"]
+        exchanges_to_try = ["binanceus", "kraken", "kucoin", "coinbase"]
 
         for exchange_name in exchanges_to_try:
             print(f"🔄 Trying {exchange_name}...")
@@ -118,7 +117,7 @@ async def run_arbitrage_direct(trading_mode):
                 continue
     else:
         # Use paper trading with real trading code (for testing)
-        exchanges_to_try = ["kraken", "coinbase", "binance"]
+        exchanges_to_try = ["binanceus", "kraken", "kucoin", "coinbase"]
 
         for exchange_name in exchanges_to_try:
             print(f"🔄 Trying {exchange_name}...")
