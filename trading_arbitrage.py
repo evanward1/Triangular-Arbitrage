@@ -13,8 +13,8 @@ from typing import Dict, List, Optional
 
 import ccxt
 import networkx as nx
-
 from equity_tracker import EquityTracker
+
 from triangular_arbitrage.execution_helpers import (
     depth_limited_size,
     estimate_cycle_slippage_pct,
@@ -125,10 +125,13 @@ class RealTriangularArbitrage:
         self.symbol_allowlist = [
             s.strip().upper() for s in self.symbol_allowlist if s.strip()
         ]
-        self.triangle_bases = os.getenv("TRIANGLE_BASES", "USD,USDT").split(",")
-        self.triangle_bases = [
-            s.strip().upper() for s in self.triangle_bases if s.strip()
-        ]
+        triangle_bases_env = os.getenv("TRIANGLE_BASES", "")
+        if triangle_bases_env:
+            self.triangle_bases = [
+                s.strip().upper() for s in triangle_bases_env.split(",") if s.strip()
+            ]
+        else:
+            self.triangle_bases = []  # Empty = allow all currencies as bases
         self.exclude_symbols = (
             os.getenv("EXCLUDE_SYMBOLS", "").split(",")
             if os.getenv("EXCLUDE_SYMBOLS")
