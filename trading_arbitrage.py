@@ -8,13 +8,14 @@ import asyncio
 import logging
 import os
 import platform
+import random
 import time
 from typing import Dict, List, Optional
 
 import ccxt
 import networkx as nx
-from equity_tracker import EquityTracker
 
+from equity_tracker import EquityTracker
 from triangular_arbitrage.execution_helpers import (
     depth_limited_size,
     estimate_cycle_slippage_pct,
@@ -50,6 +51,15 @@ class RealTriangularArbitrage:
         self.graph = nx.DiGraph()
         self.balances = {}
         self.paper_balances = {}  # Track paper trading balances separately
+
+        # Connection timeout and retry configuration
+        self.connection_timeout_seconds = int(
+            os.getenv("CONNECTION_TIMEOUT_SECONDS", "30")
+        )
+        self.max_connection_retries = int(os.getenv("MAX_CONNECTION_RETRIES", "3"))
+        self.initial_retry_delay = (
+            2.0  # Initial delay in seconds for exponential backoff
+        )
 
         # Safety limits
         self.max_position_size = float(os.getenv("MAX_POSITION_SIZE", "100"))
@@ -184,6 +194,84 @@ class RealTriangularArbitrage:
             os.makedirs("logs", exist_ok=True)
 
         self._setup_exchange()
+
+    async def _retry_with_backoff(self, func, operation_name, *args, **kwargs):
+        """Execute a function with retry logic and exponential backoff.
+
+        Implements exponential backoff with jitter to handle transient failures.
+        The delay between retries doubles each time, with random jitter added
+        to prevent thundering herd problems.
+
+        Args:
+            func: The function to execute
+            operation_name: Name of the operation for logging
+            *args: Arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
+
+        Returns:
+            The return value of the successful function call
+
+        Raises:
+            The last exception if all retries fail
+        """
+        last_exception = None
+
+        for attempt in range(self.max_connection_retries):
+            try:
+                if attempt > 0:
+                    # Calculate exponential backoff with jitter
+                    base_delay = self.initial_retry_delay * (2 ** (attempt - 1))
+                    # Add jitter: ±25% of base delay
+                    jitter = base_delay * 0.25 * (2 * random.random() - 1)
+                    delay = base_delay + jitter
+
+                    logger.info(
+                        f"🔄 Retrying {operation_name} (attempt {attempt + 1}/{self.max_connection_retries}) "
+                        f"after {delay:.1f}s delay..."
+                    )
+                    await asyncio.sleep(delay)
+
+                # Try to execute the function
+                result = func(*args, **kwargs)
+
+                if attempt > 0:
+                    logger.info(
+                        f"✅ {operation_name} succeeded after {attempt + 1} attempts"
+                    )
+
+                return result
+
+            except (ccxt.RequestTimeout, ccxt.NetworkError) as e:
+                last_exception = e
+
+                if attempt < self.max_connection_retries - 1:
+                    # Still have retries left
+                    logger.warning(
+                        f"⚠️ {operation_name} failed (attempt {attempt + 1}/{self.max_connection_retries}): {e}"
+                    )
+                    logger.info("💡 Will retry with exponential backoff...")
+                else:
+                    # This was the last attempt
+                    logger.error(
+                        f"❌ {operation_name} failed after {self.max_connection_retries} attempts: {e}"
+                    )
+                    logger.error(
+                        "💡 Consider increasing MAX_CONNECTION_RETRIES or CONNECTION_TIMEOUT_SECONDS"
+                    )
+                    raise
+
+            except Exception as e:
+                # For non-network errors, don't retry
+                logger.error(f"❌ {operation_name} failed with non-retryable error: {e}")
+                raise
+
+        # This should never be reached, but just in case
+        if last_exception:
+            raise last_exception
+        else:
+            raise RuntimeError(
+                f"{operation_name} failed without exception"
+            )  # noqa: F541
 
     def _setup_exchange(self):
         """Setup exchange with API credentials"""

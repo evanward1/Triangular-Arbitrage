@@ -150,7 +150,11 @@ def decimal_to_basis_points(decimal: float) -> float:
 
 
 # Logging utilities
-def get_logger(name: str, level: Union[str, int] = logging.INFO, extra: Optional[Dict[str, Any]] = None) -> logging.Logger:
+def get_logger(
+    name: str,
+    level: Union[str, int] = logging.INFO,
+    extra: Optional[Dict[str, Any]] = None,
+) -> logging.Logger:
     """
     Get a structured logger with consistent formatting and extra context.
 
@@ -174,14 +178,15 @@ def get_logger(name: str, level: Union[str, int] = logging.INFO, extra: Optional
 
         # Structured format with timestamp, level, module, and message
         format_str = (
-            "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | "
-            "%(message)s"
+            "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | " "%(message)s"
         )
 
         if extra:
             # Add extra fields to format
             extra_fields = " | ".join([f"{k}=%(extra_{k})s" for k in extra.keys()])
-            format_str = format_str.replace(" | %(message)s", f" | {extra_fields} | %(message)s")
+            format_str = format_str.replace(
+                " | %(message)s", f" | {extra_fields} | %(message)s"
+            )
 
         formatter = logging.Formatter(format_str)
         handler.setFormatter(formatter)
@@ -189,7 +194,9 @@ def get_logger(name: str, level: Union[str, int] = logging.INFO, extra: Optional
 
         # Store extra context in logger
         if extra:
-            logger = logging.LoggerAdapter(logger, {"extra_" + k: v for k, v in extra.items()})
+            logger = logging.LoggerAdapter(
+                logger, {"extra_" + k: v for k, v in extra.items()}
+            )
 
     return logger
 
@@ -302,3 +309,38 @@ def timing_decorator(func):
         return result
 
     return wrapper
+
+
+def format_profit(decimal_profit):
+    """Format a decimal profit value as a percentage string.
+
+    Converts a decimal profit value (e.g., 0.0123) to a formatted
+    percentage string with a sign prefix (e.g., "+1.23%").
+
+    Args:
+        decimal_profit (float): The profit as a decimal value.
+                               Positive values indicate profit,
+                               negative values indicate loss.
+
+    Returns:
+        str: Formatted percentage string with sign prefix.
+             Positive values get '+' prefix, negative values get '-'.
+
+    Examples:
+        >>> format_profit(0.0123)
+        '+1.23%'
+        >>> format_profit(-0.0456)
+        '-4.56%'
+        >>> format_profit(0.0)
+        '+0.00%'
+        >>> format_profit(0.10567)
+        '+10.57%'
+    """
+    # Convert decimal to percentage
+    percentage = decimal_profit * 100
+
+    # Format with sign prefix
+    if percentage >= 0:
+        return f"+{percentage:.2f}%"
+    else:
+        return f"{percentage:.2f}%"
