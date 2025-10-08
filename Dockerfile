@@ -1,6 +1,16 @@
-# Multi-stage Docker build for triangular arbitrage system
-# Use slim Python 3.11 base for smaller image size
-FROM python:3.11-slim as base
+# Multi-stage Docker build for triangular arbitrage system with web dashboard
+
+# Stage 1: Build React frontend
+FROM node:18-alpine AS frontend-builder
+
+WORKDIR /app/web_ui
+COPY web_ui/package*.json ./
+RUN npm install
+COPY web_ui/ ./
+RUN npm run build
+
+# Stage 2: Python backend
+FROM python:3.10-slim as base
 
 # Install system dependencies required for the application
 RUN apt-get update && apt-get install -y \
@@ -18,17 +28,22 @@ WORKDIR /app
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
 # Copy requirements first for better Docker layer caching
-COPY requirements.txt requirements-dev.txt ./
+COPY requirements.txt ./
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir -r requirements-dev.txt
 
 # Copy the entire repository
 COPY . .
 
+# Copy built React frontend from builder stage
+COPY --from=frontend-builder /app/web_ui/build /app/web_ui/build
+
 # Install the application in development mode
 RUN pip install -e .
+
+# Create logs directory
+RUN mkdir -p logs
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
@@ -37,12 +52,13 @@ USER appuser
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV TRADING_MODE=paper
 
-# Expose metrics port
+# Expose web server port
 EXPOSE 8000
 
-# Default command runs tests
-CMD ["python", "-m", "pytest", "tests/", "-v"]
+# Default command runs the web server
+CMD ["python", "web_server.py"]
 
 # Development stage with additional tools
 FROM base as dev
@@ -64,8 +80,5 @@ CMD ["/bin/bash"]
 # Production stage - minimal runtime
 FROM base as prod
 
-# Remove development dependencies to minimize size
-RUN pip uninstall -y pytest pytest-cov mypy black isort flake8 pre-commit
-
-# Production command runs the strategy
-CMD ["python", "run_strategy.py", "--help"]
+# Production command runs the web server
+CMD ["python", "web_server.py"]

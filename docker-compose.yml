@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  arbitrage-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: base
+    container_name: arbitrage-dashboard
+    ports:
+      - "8000:8000"
+    environment:
+      # Trading Configuration
+      - TRADING_MODE=paper
+      - PAPER_USDT=1000
+      - PAPER_USDC=1000
+
+      # Filter Configuration (leave empty for all symbols)
+      - SYMBOL_ALLOWLIST=
+      - TRIANGLE_BASES=
+      - EXCLUDE_SYMBOLS=
+
+      # Trading Parameters
+      - MIN_PROFIT_THRESHOLD=0.5
+      - MAX_POSITION_SIZE=100
+
+      # Polling & Display
+      - POLL_SEC=10
+      - VERBOSITY=normal
+      - TOPN=3
+      - RUN_MIN=3
+
+      # API Keys (for live trading - set in .env file)
+      - KRAKEN_API_KEY=${KRAKEN_API_KEY:-}
+      - KRAKEN_API_SECRET=${KRAKEN_API_SECRET:-}
+      - BINANCE_API_KEY=${BINANCE_API_KEY:-}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET:-}
+      - COINBASE_API_KEY=${COINBASE_API_KEY:-}
+      - COINBASE_API_SECRET=${COINBASE_API_SECRET:-}
+
+    volumes:
+      - ./logs:/app/logs
+      - ./trade_state.db:/app/trade_state.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

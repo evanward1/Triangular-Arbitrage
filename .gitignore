@@ -143,3 +143,14 @@ cython_debug/
 *.db
 *.db-shm
 *.db-wal
+
+# React / Node.js
+web_ui/node_modules/
+web_ui/build/
+web_ui/.env.local
+web_ui/.env.development.local
+web_ui/.env.test.local
+web_ui/.env.production.local
+web_ui/npm-debug.log*
+web_ui/yarn-debug.log*
+web_ui/yarn-error.log*

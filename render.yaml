@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: arbitrage-dashboard
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: TRADING_MODE
+        value: paper
+      - key: PAPER_USDT
+        value: 1000
+      - key: MIN_PROFIT_THRESHOLD
+        value: 0.5
+      - key: MAX_POSITION_SIZE
+        value: 100
+      - key: PORT
+        value: 8000
+      # Add API keys as secret environment variables in Render dashboard
