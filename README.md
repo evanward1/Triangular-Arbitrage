@@ -10,6 +10,7 @@ This system continuously monitors cryptocurrency markets to find triangular arbi
 
 - **⚡ Real-Time Detection**: Continuously scans markets for profitable arbitrage cycles
 - **🔄 Multi-Exchange Support**: Works with Binance, Kraken, KuCoin, and Coinbase
+- **🔗 DEX Support**: NEW! DEX/MEV arbitrage on Ethereum with Uniswap V3
 - **📊 Live Market Data**: Uses real-time order book data with configurable depth levels
 - **💰 Dual Trading Modes**: Paper trading (simulation) and live trading (real money)
 - **🛡️ Risk Management**: Configurable position limits, profit thresholds, and execution controls
@@ -35,6 +36,7 @@ cp .env.example .env
 
 ### Running the System
 
+**CEX Arbitrage (Centralized Exchanges)**
 ```bash
 # Interactive mode - choose paper or live trading
 python run_clean.py
@@ -44,6 +46,19 @@ python run_clean.py 1
 
 # Live trading mode (real money - requires API keys)
 python run_clean.py 2
+```
+
+**DEX/MEV Arbitrage (Decentralized Exchanges)**
+```bash
+# Show setup requirements
+make dex_setup
+
+# Run paper trading scan (finds 20-40 bps opportunities)
+make dex_paper
+
+# Configure for your chain
+cp configs/dex_mev.example.yaml configs/dex_mev.yaml
+# Edit configs/dex_mev.yaml with your settings
 ```
 
 ## Configuration
@@ -441,6 +456,64 @@ pytest tests/integration/
 - Never trade with money you cannot afford to lose
 - The authors assume no liability for financial losses
 - Use at your own risk
+
+## DEX/MEV Arbitrage
+
+The system now includes support for decentralized exchange (DEX) arbitrage with MEV protection.
+
+### Features
+- **Ethereum DEX Support**: Uniswap V3 integration via Web3
+- **Paper Trading Mode**: Test strategies with mock data
+- **Realistic Profits**: 20-40 bps net profit after gas and slippage
+- **MEV Protection**: Configurable Flashbots support
+- **Multi-Route Detection**: Discovers base → mid → alt → base cycles
+
+### Quick Start
+
+```bash
+# Install web3 dependency
+pip install web3
+
+# View setup requirements
+make dex_setup
+
+# Run paper trading scan
+make dex_paper
+```
+
+### Configuration
+
+Edit `configs/dex_mev.example.yaml`:
+
+```yaml
+chain_id: 1  # Ethereum mainnet
+base_asset: "USDC"
+min_profit_bps: 10  # 0.1% minimum profit
+max_slippage_bps: 10  # 0.1% max slippage
+use_flashbots: true  # Enable MEV protection
+
+# Required environment variables
+# ETH_RPC_URL - Ethereum RPC endpoint (Alchemy, Infura)
+# PRIVATE_KEY - Wallet private key (0x prefixed)
+```
+
+### Example Output
+
+```
+📊 Found 1 profitable opportunities:
+
+#1 Arbitrage Opportunity - Uniswap V3
+Path: USDC → WETH → USDT → USDC
+Notional Amount: 1000.0 USDC
+
+  Step 1: 1000.000000 USDC → 0.498500 WETH
+  Step 2: 0.498500 WETH → 995.251511 USDT
+  Step 3: 995.251511 USDT → 1010.126540 USDC
+
+💰 Gross Profit: 101.27 bps
+💸 Net Profit:   41.16 bps (after gas & slippage)
+✅ Good opportunity
+```
 
 ## Support
 
