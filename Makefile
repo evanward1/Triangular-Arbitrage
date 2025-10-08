@@ -2,7 +2,7 @@
 # All targets are idempotent and display the commands they run
 
 .DEFAULT_GOAL := help
-.PHONY: help setup test lint type fmt validate backtest paper metrics docker-build docker-test clean
+.PHONY: help setup test lint type fmt validate backtest paper metrics docker-build docker-test clean dex_setup dex_paper
 
 # Configuration
 PYTHON := python3
@@ -63,7 +63,7 @@ backtest: ## Run backtesting mode with example strategy
 	$(PYTHON) run_strategy.py --strategy configs/strategies/strategy_robust_example.yaml --mode backtest
 	@echo "$(GREEN)✅ Backtest completed$(RESET)"
 
-paper: ## Run paper trading mode with example strategy  
+paper: ## Run paper trading mode with example strategy
 	@echo "$(CYAN)Running paper trading mode...$(RESET)"
 	$(PYTHON) run_strategy.py --strategy configs/strategies/strategy_robust_example.yaml --mode paper
 	@echo "$(GREEN)✅ Paper trading completed$(RESET)"
@@ -119,3 +119,24 @@ check-build: build ## Check distribution packages
 	@echo "$(CYAN)Checking distribution packages...$(RESET)"
 	$(PYTHON) -m twine check dist/*
 	@echo "$(GREEN)✅ Distribution packages verified$(RESET)"
+
+dex_setup: ## Show environment variables and dependencies for DEX MEV feature
+	@echo "$(CYAN)DEX MEV Setup Requirements$(RESET)"
+	@echo "$(CYAN)===========================$(RESET)"
+	@echo ""
+	@echo "$(YELLOW)Required environment variables:$(RESET)"
+	@echo "  ETH_RPC_URL     - Ethereum RPC endpoint URL"
+	@echo "  PRIVATE_KEY     - Private key (0x prefixed hex string)"
+	@echo ""
+	@echo "$(YELLOW)Expected pip packages:$(RESET)"
+	@echo "  web3            - For blockchain interactions"
+	@echo "  pyyaml          - For configuration files"
+	@echo "  python-dotenv   - For environment variables"
+	@echo ""
+	@echo "$(GREEN)To install web3:$(RESET) $(PIP) install web3"
+	@echo "$(GREEN)Example config:$(RESET) configs/dex_mev.example.yaml"
+
+dex_paper: ## Run DEX MEV arbitrage paper trading scan
+	@echo "$(CYAN)Running DEX MEV paper trading scan...$(RESET)"
+	$(PYTHON) backtests/run_dex_paper.py
+	@echo "$(GREEN)✅ DEX paper scan completed$(RESET)"
