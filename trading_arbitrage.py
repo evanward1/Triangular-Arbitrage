@@ -17,8 +17,8 @@ import networkx as nx
 
 from equity_tracker import EquityTracker
 from triangular_arbitrage.execution_helpers import (
+    depth_fill_price,
     depth_limited_size,
-    estimate_cycle_slippage_pct,
     leg_timed,
 )
 
@@ -66,8 +66,16 @@ class RealTriangularArbitrage:
         self.min_profit_threshold = float(os.getenv("MIN_PROFIT_THRESHOLD", "0.20"))
         self.max_leg_latency_ms = int(os.getenv("MAX_LEG_LATENCY_MS", "2000"))
 
-        # Sizing configuration
-        self.min_fraction_of_target = float(os.getenv("MIN_FRACTION_OF_TARGET", "0.05"))
+        # Sizing configuration (smarter depth gating)
+        self.depth_abs_min_usd = float(
+            os.getenv("DEPTH_ABS_MIN_USD", "10.0")
+        )  # Absolute minimum
+        self.depth_rel_min_frac = float(
+            os.getenv("DEPTH_REL_MIN_FRAC", "0.002")
+        )  # 0.2% of balance
+        self.leg_min_notional_usd = float(
+            os.getenv("LEG_MIN_NOTIONAL_USD", "10.0")
+        )  # Per-leg minimum
 
         # Slippage estimation
         self.slippage_pct_estimate = float(os.getenv("SLIPPAGE_PCT_ESTIMATE", "0.05"))
@@ -78,9 +86,26 @@ class RealTriangularArbitrage:
             os.getenv("SLIPPAGE_FLOOR_BPS", "2")
         )  # Minimum slippage in basis points
 
+        # Per-leg slippage caps
+        self.max_slippage_leg_bps = float(
+            os.getenv("MAX_SLIPPAGE_LEG_BPS", "35")
+        )  # Max slippage per leg (35 bps = 0.35%)
+
+        # Kill-switch for daily loss
+        self.kill_switch_enabled = (
+            os.getenv("KILL_SWITCH_ENABLED", "true").lower() == "true"
+        )
+        self.max_daily_drawdown_pct = float(
+            os.getenv("MAX_DAILY_DRAWDOWN_PCT", "2.0")
+        )  # Max daily loss % (2.0 = 2%)
+        self.kill_switch_active = False  # Will be set if threshold breached
+
         # Display settings
         self.verbosity = os.getenv("VERBOSITY", "normal").lower()
         self.topn = int(os.getenv("TOPN", "3"))
+        self.equity_print_every = int(
+            os.getenv("EQUITY_PRINT_EVERY", "5")
+        )  # Print equity every N scans
         self.run_min = int(os.getenv("RUN_MIN", "0"))
 
         # Dedupe settings
@@ -958,10 +983,16 @@ class RealTriangularArbitrage:
 
     async def estimate_cycle_slippage(
         self, cycle: List[str], amount_usd: float
-    ) -> float:
-        """Estimate total slippage across all legs using order book depth"""
+    ) -> tuple[float, list[dict]]:
+        """Estimate total slippage across all legs using order book depth
+
+        Returns:
+            tuple: (total_slippage_pct, per_leg_details)
+            where per_leg_details is a list of dicts with keys: symbol, side, slippage_pct
+        """
         books = []
         amounts = []
+        leg_info = []  # Track symbol and side for each leg
         current_amount = amount_usd
 
         try:
@@ -980,7 +1011,7 @@ class RealTriangularArbitrage:
                     symbol = sell_pair
                     side = "sell"
                 else:
-                    return 0.10  # Conservative penalty if pair not found
+                    return (0.10, [])  # Conservative penalty if pair not found
 
                 # Fetch order book
                 try:
@@ -988,6 +1019,7 @@ class RealTriangularArbitrage:
                         symbol, limit=self.depth_levels
                     )
                     books.append(order_book)
+                    leg_info.append({"symbol": symbol, "side": side})
 
                     # Convert to base currency amount for depth calculation
                     if side == "buy":
@@ -1018,18 +1050,50 @@ class RealTriangularArbitrage:
 
                 except Exception as e:
                     logger.error(f"Failed to fetch order book for {symbol}: {e}")
-                    return 0.10
+                    return (0.10, [])
 
-            # Use helper function to calculate slippage
-            calculated_slippage = estimate_cycle_slippage_pct(books, amounts)
+            # Calculate per-leg slippage
+            per_leg_details = []
+            total_slippage = 0.0
+
+            for book, amount, info in zip(books, amounts, leg_info):
+                if not book:
+                    return (999.0, [])
+
+                # Determine which side to use
+                if info["side"] == "buy" and book.get("asks"):
+                    side_data = book["asks"]
+                    best_price = side_data[0][0]
+                elif info["side"] == "sell" and book.get("bids"):
+                    side_data = book["bids"]
+                    best_price = side_data[0][0]
+                else:
+                    return (999.0, [])
+
+                vwap = depth_fill_price(side_data, amount)
+                if vwap is None:
+                    return (999.0, [])  # Insufficient depth
+
+                leg_slippage_pct = abs((vwap - best_price) / best_price) * 100
+                total_slippage += leg_slippage_pct
+
+                per_leg_details.append(
+                    {
+                        "symbol": info["symbol"],
+                        "side": info["side"].upper(),
+                        "slippage_pct": leg_slippage_pct,
+                    }
+                )
 
             # Apply slippage floor
             slippage_floor_pct = self.slippage_floor_bps / 100.0
-            return max(calculated_slippage, slippage_floor_pct)
+            final_slippage = max(total_slippage, slippage_floor_pct)
+
+            return (final_slippage, per_leg_details)
 
         except Exception as e:
             logger.error(f"❌ Failed to estimate slippage: {e}")
-            return 0.10  # Conservative penalty on error
+            return (0.10, [])  # Conservative penalty on error
 
     async def compute_depth_limited_size(
         self, cycle: List[str], max_size_usd: float
@@ -2141,10 +2205,15 @@ class RealTriangularArbitrage:
                     else:
                         print("| (scanning...)")
 
+                # Print equity summary periodically (every N scans OR when opportunities execute)
+                should_print_equity = (trade_num % self.equity_print_every) == 0 or len(
+                    opportunities
+                ) > 0
+
                 # Check if we should continue or execute
                 if not opportunities:
                     # Periodic equity heartbeat
-                    if (trade_num % self.equity_every_n) == 0:
+                    if should_print_equity:
                         cur, priced, unpriced = self._equity_usd()
                         self.last_equity_usd = cur
                         self.equity_curve.append((time.time(), cur))
@@ -2154,9 +2223,12 @@ class RealTriangularArbitrage:
                             if self.start_equity_usd
                             else 0.0
                         )
+                        kill_switch_msg = (
+                            " [🛑 KILL SWITCH ACTIVE]" if self.kill_switch_active else ""
+                        )
                         print(
                             f"💼 Equity: ${cur:,.{self.equity_precision}f} "
-                            f"(Δ ${delta:+,.{self.equity_precision}f}, {deltap:+.2f}%)"
+                            f"(Δ ${delta:+,.{self.equity_precision}f}, {deltap:+.2f}%){kill_switch_msg}"
                         )
 
                         # CSV logging if debug
@@ -2246,6 +2318,27 @@ class RealTriangularArbitrage:
                 executed_count = 0
 
                 for opp_idx, opportunity in enumerate(opportunities):
+                    # Check kill-switch before processing any opportunity
+                    if self.kill_switch_enabled and not self.kill_switch_active:
+                        cur_equity, _, _ = self._equity_usd()
+                        if self.start_equity_usd and cur_equity:
+                            drawdown_pct = (
+                                (cur_equity - self.start_equity_usd)
+                                / self.start_equity_usd
+                            ) * 100
+                            if drawdown_pct < -self.max_daily_drawdown_pct:
+                                self.kill_switch_active = True
+                                logger.warning(
+                                    f"🛑 KILL SWITCH: daily drawdown {drawdown_pct:.1f}% exceeds "
+                                    f"-{self.max_daily_drawdown_pct:.1f}% — halting executions (scan continues)"
+                                )
+
+                    # Skip execution if kill-switch is active
+                    if self.kill_switch_active:
+                        if opp_idx == 0:  # Only log once per scan
+                            logger.info("🛑 Kill-switch active, skipping all executions")
+                        continue
+
                     cycle = opportunity["cycle"]
                     net_profit = opportunity["net_profit_pct"]
                     gross_profit = opportunity["gross_profit_pct"]
@@ -2284,69 +2377,63 @@ class RealTriangularArbitrage:
                             )
                             continue
 
-                    # Skip order book depth check in paper trading mode
-                    if self.trading_mode == "paper":
-                        logger.info("📖 Skipping order book depth check (paper trading)")
-                    else:
-                        # Check order book depth for each trade in the cycle
-                        logger.info("📖 Checking order book depth...")
-                        depth_check_passed = True
-                        amount = self.max_position_size
+                    # Check order book depth for each trade in the cycle (enforced in both paper and live)
+                    logger.info("📖 Checking order book depth...")
+                    depth_check_passed = True
+                    amount = self.max_position_size
 
-                        for i in range(len(cycle) - 1):
-                            from_currency = cycle[i]
-                            to_currency = cycle[i + 1]
+                    for i in range(len(cycle) - 1):
+                        from_currency = cycle[i]
+                        to_currency = cycle[i + 1]
 
-                            # Determine trading pair and side
-                            buy_pair = f"{to_currency}/{from_currency}"
-                            sell_pair = f"{from_currency}/{to_currency}"
+                        # Determine trading pair and side
+                        buy_pair = f"{to_currency}/{from_currency}"
+                        sell_pair = f"{from_currency}/{to_currency}"
 
-                            if buy_pair in self.symbols:
-                                symbol = buy_pair
-                                side = "buy"
-                            elif sell_pair in self.symbols:
-                                symbol = sell_pair
-                                side = "sell"
-                            else:
-                                depth_check_passed = False
-                                break
+                        if buy_pair in self.symbols:
+                            symbol = buy_pair
+                            side = "buy"
+                        elif sell_pair in self.symbols:
+                            symbol = sell_pair
+                            side = "sell"
+                        else:
+                            depth_check_passed = False
+                            break
 
-                            depth = await self.check_order_book_depth(
-                                symbol, side, amount
+                        depth = await self.check_order_book_depth(symbol, side, amount)
+
+                        if not depth.get("sufficient"):
+                            logger.warning(
+                                f"  ⚠️ Step {i+1} ({from_currency}->{to_currency}): "
+                                f"Insufficient liquidity in {symbol} "
+                                f"(need {depth.get('needed')}, available {depth.get('available', 0):.2f})"
                             )
-
-                            if not depth.get("sufficient"):
-                                logger.warning(
-                                    f"  ⚠️ Step {i+1} ({from_currency}->{to_currency}): "
-                                    f"Insufficient liquidity in {symbol} "
-                                    f"(need {depth.get('needed')}, available {depth.get('available', 0):.2f})"
-                                )
-                                depth_check_passed = False
-                                break
-                            else:
-                                avg_price = depth.get("avg_price")
-                                ticker_price = self.tickers[symbol].get(
-                                    "ask" if side == "buy" else "bid"
-                                )
-                                slippage = (
-                                    abs(avg_price - ticker_price) / ticker_price * 100
-                                )
-                                logger.info(
-                                    f"  ✅ Step {i+1} "
-                                    f"({from_currency}->{to_currency}): "
-                                    f"{symbol} has sufficient liquidity "
-                                    f"(avg price: {avg_price:.6f}, "
-                                    f"slippage: {slippage:.3f}%)"
-                                )
-
-                            # Update amount for next step (rough estimate)
-                            amount = amount * depth.get("avg_price", 1.0) * 0.999
-
-                        if not depth_check_passed:
+                            depth_check_passed = False
+                            break
+                        else:
+                            avg_price = depth.get("avg_price")
+                            ticker_price = self.tickers[symbol].get(
+                                "ask" if side == "buy" else "bid"
+                            )
+                            slippage = (
+                                abs(avg_price - ticker_price) / ticker_price * 100
+                            )
                             logger.info(
-                                "❌ Skipping opportunity due to insufficient liquidity"
+                                f"  ✅ Step {i+1} "
+                                f"({from_currency}->{to_currency}): "
+                                f"{symbol} has sufficient liquidity "
+                                f"(avg price: {avg_price:.6f}, "
+                                f"slippage: {slippage:.3f}%)"
                             )
-                            continue
+
+                        # Update amount for next step (rough estimate)
+                        amount = amount * depth.get("avg_price", 1.0) * 0.999
+
+                    if not depth_check_passed:
+                        logger.info(
+                            "❌ Skipping opportunity due to insufficient liquidity"
+                        )
+                        continue
 
                     # Track attempt
                     self.execution_stats["attempts"] += 1
@@ -2362,13 +2449,25 @@ class RealTriangularArbitrage:
                         cycle, self.max_position_size
                     )
 
-                    # Compare depth size against the balance-capped size
-                    min_required = size_after_balance_cap * self.min_fraction_of_target
+                    # Smart depth gating: max(absolute min, relative min)
+                    relative_min = size_after_balance_cap * self.depth_rel_min_frac
+                    min_required = max(self.depth_abs_min_usd, relative_min)
+
+                    # Also check per-leg minimums
                     if depth_limited_size_usd < min_required:
                         logger.warning(
                             f"   ⚠️ REJECT: Depth-limited size ${depth_limited_size_usd:.2f} "
-                            f"< {self.min_fraction_of_target*100:.1f}% of balance-capped size "
-                            f"(${size_after_balance_cap:.2f})"
+                            f"< min(abs=${self.depth_abs_min_usd:.2f}, "
+                            f"rel={self.depth_rel_min_frac*100:.2f}%×${size_after_balance_cap:.2f}=${relative_min:.2f})"
+                        )
+                        self.execution_stats["depth_rejects"] += 1
+                        continue
+
+                    # Check that size meets per-leg exchange minimums
+                    if depth_limited_size_usd < self.leg_min_notional_usd * 3:
+                        logger.warning(
+                            f"   ⚠️ REJECT: Size ${depth_limited_size_usd:.2f} "
+                            f"< 3×leg_min (${self.leg_min_notional_usd * 3:.2f})"
                         )
                         self.execution_stats["depth_rejects"] += 1
                         continue
@@ -2379,9 +2478,36 @@ class RealTriangularArbitrage:
 
                     # Validate with REAL slippage from order book depth
                     logger.info("📖 Checking real slippage from order book...")
-                    real_slippage = await self.estimate_cycle_slippage(
+                    real_slippage, per_leg_details = await self.estimate_cycle_slippage(
                         cycle, execution_size
                     )
+
+                    # Check per-leg slippage caps
+                    max_slippage_leg_pct = self.max_slippage_leg_bps / 100.0
+                    leg_cap_exceeded = False
+                    for i, leg in enumerate(per_leg_details, 1):
+                        if leg["slippage_pct"] > max_slippage_leg_pct:
+                            logger.warning(
+                                f"   ⚠️ REJECT: Leg slippage {leg['slippage_pct']:.2f}% "
+                                f"> cap {max_slippage_leg_pct:.2f}% on LEG{i} "
+                                f"(pair={leg['symbol']}, side={leg['side']})"
+                            )
+                            self.execution_stats["slippage_rejects"] += 1
+                            leg_cap_exceeded = True
+                            break
+
+                    if leg_cap_exceeded:
+                        continue
+
+                    # Log per-leg slippage on success (verbose mode)
+                    if per_leg_details:
+                        leg_slip_str = " ".join(
+                            f"LEG{i}={leg['slippage_pct']:.3f}%"
+                            for i, leg in enumerate(per_leg_details, 1)
+                        )
+                        logger.info(
+                            f"   Slip[{leg_slip_str}] (cap={max_slippage_leg_pct:.2f}%)"
+                        )
 
                     # Recalculate net profit with real slippage
                     real_net_profit = gross_profit - fee_cost_pct - real_slippage
@@ -2416,6 +2542,23 @@ class RealTriangularArbitrage:
                     f"\n✅ Executed {executed_count}/{len(opportunities)} "
                     f"opportunities in scan {trade_num}"
                 )
+
+                # Print equity after execution
+                if executed_count > 0:
+                    cur, priced, unpriced = self._equity_usd()
+                    delta = cur - self.start_equity_usd
+                    deltap = (
+                        (delta / self.start_equity_usd * 100.0)
+                        if self.start_equity_usd
+                        else 0.0
+                    )
+                    kill_switch_msg = (
+                        " [🛑 KILL SWITCH ACTIVE]" if self.kill_switch_active else ""
+                    )
+                    print(
+                        f"💼 Equity: ${cur:,.{self.equity_precision}f} "
+                        f"(Δ ${delta:+,.{self.equity_precision}f}, {deltap:+.2f}%){kill_switch_msg}"
+                    )
 
                 # Record scan in equity tracker
                 await self.equity_tracker.on_scan(self.get_cash, self.get_asset_value)
