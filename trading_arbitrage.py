@@ -1301,7 +1301,11 @@ class RealTriangularArbitrage:
                                 all_cycles.append(cycle_data)
 
                                 # Only keep if net profit estimate exceeds threshold
-                                if net_profit_pct_estimate > self.min_profit_threshold:
+                                # Guardrail: Never accept negative net regardless of config
+                                effective_threshold = max(
+                                    0.0, self.min_profit_threshold
+                                )
+                                if net_profit_pct_estimate > effective_threshold:
                                     opportunities.append(
                                         {
                                             "cycle": cycle,
@@ -2509,9 +2513,12 @@ class RealTriangularArbitrage:
                         self.execution_stats["depth_rejects"] += 1
                         continue
 
-                    # Use depth-limited size for execution
-                    execution_size = depth_limited_size_usd
-                    logger.debug(f"   ✅ Depth-limited size: ${execution_size:.2f}")
+                    # Use depth-limited size for execution, respecting balance cap
+                    execution_size = min(depth_limited_size_usd, available_balance)
+                    logger.debug(
+                        f"   ✅ Final execution size: ${execution_size:.2f} "
+                        f"(depth=${depth_limited_size_usd:.2f}, balance=${available_balance:.2f})"
+                    )
 
                     # Re-validate slippage with actual execution size
                     (
@@ -2526,7 +2533,9 @@ class RealTriangularArbitrage:
                     )
 
                     # Reject if real slippage kills the edge
-                    if real_net_profit < self.min_profit_threshold:
+                    # Guardrail: Never execute negative net regardless of config
+                    effective_threshold = max(0.0, self.min_profit_threshold)
+                    if real_net_profit < effective_threshold:
                         logger.warning(
                             f"   ⚠️ REJECT: Real net profit {real_net_profit:.3f}% below threshold"
                         )
