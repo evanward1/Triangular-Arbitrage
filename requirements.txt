@@ -36,6 +36,12 @@ sqlalchemy>=1.4.0
 # Web3 for DEX interactions
 web3>=6.0.0
 
+# Console output formatting (optional but recommended for DEX scanner)
+rich>=13.7.0
+
+# Testing framework
+pytest>=7.4.0
+
 # Web Dashboard (FastAPI + React)
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0

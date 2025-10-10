@@ -51,15 +51,16 @@ python run_clean.py 2
 
 **DEX/MEV Arbitrage (Decentralized Exchanges)**
 ```bash
-# Show setup requirements
-make dex_setup
+# Set up RPC endpoint in .env
+# RPC_URL=https://mainnet.infura.io/v3/YOUR_KEY
 
-# Run paper trading scan (finds 20-40 bps opportunities)
-make dex_paper
+# Run V2 cross-DEX paper trading (USDC/WETH on Uniswap vs Sushi)
+python run_dex.py
 
-# Configure for your chain
-cp configs/dex_mev.example.yaml configs/dex_mev.yaml
-# Edit configs/dex_mev.yaml with your settings
+# Configure parameters in .env:
+# START_CASH_USDC=1000   # Starting capital
+# GAS_PRICE_GWEI=12      # Current gas price
+# SCAN_SEC=10            # Scan frequency
 ```
 
 ## Configuration
@@ -550,61 +551,289 @@ python tests/integration/test_gnn_scoring.py
 
 ## DEX/MEV Arbitrage
 
-The system now includes support for decentralized exchange (DEX) arbitrage with MEV protection.
+The system now includes support for decentralized exchange (DEX) arbitrage on Ethereum mainnet.
 
 ### Features
-- **Ethereum DEX Support**: Uniswap V3 integration via Web3
-- **Paper Trading Mode**: Test strategies with mock data
-- **Realistic Profits**: 20-40 bps net profit after gas and slippage
-- **MEV Protection**: Configurable Flashbots support
-- **Multi-Route Detection**: Discovers base → mid → alt → base cycles
+- **Uniswap V2 Cross-DEX**: Arbitrage between Uniswap V2 and SushiSwap
+- **Paper Trading Mode**: Test strategies with real on-chain data (no wallet needed)
+- **Realistic Modeling**: Accurate fee calculation, gas costs, and price impact
+- **High Precision Math**: Decimal-based calculations for accuracy
+- **Grid Search Optimization**: Finds optimal trade size across liquidity constraints
 
 ### Quick Start
 
 ```bash
-# Install web3 dependency
-pip install web3
+# 1. Get a free RPC endpoint (Infura/Alchemy/etc)
+# Sign up at https://infura.io or https://alchemy.com
 
-# View setup requirements
-make dex_setup
+# 2. Add to .env
+RPC_URL=https://mainnet.infura.io/v3/YOUR_KEY
 
-# Run paper trading scan
-make dex_paper
+# 3. Run paper trading
+python run_dex.py
 ```
 
 ### Configuration
 
-Edit `configs/dex_mev.example.yaml`:
+All settings in `.env`:
 
-```yaml
-chain_id: 1  # Ethereum mainnet
-base_asset: "USDC"
-min_profit_bps: 10  # 0.1% minimum profit
-max_slippage_bps: 10  # 0.1% max slippage
-use_flashbots: true  # Enable MEV protection
+```bash
+# RPC Configuration
+RPC_URL=https://mainnet.infura.io/v3/YOUR_KEY
 
-# Required environment variables
-# ETH_RPC_URL - Ethereum RPC endpoint (Alchemy, Infura)
-# PRIVATE_KEY - Wallet private key (0x prefixed)
+# Gas Settings
+GAS_PRICE_GWEI=12      # Current gas price (check etherscan.io)
+GAS_LIMIT=180000       # Estimated gas for dual swap
+
+# Trading Parameters
+START_CASH_USDC=1000   # Starting capital (paper mode)
+GRID_LO_USDC=10        # Minimum trade size
+GRID_HI_USDC=10000     # Maximum trade size
+GRID_STEPS=40          # Optimization granularity
+
+# Scan Settings
+SCAN_SEC=10            # Seconds between scans
 ```
 
 ### Example Output
 
 ```
-📊 Found 1 profitable opportunities:
+📝 DEX ARB PAPER MODE (V2↔V2 USDC/WETH) | fees=0.30% per pool
+Gas≈12 gwei × 180000 | Start cash=$1,000.00
 
-#1 Arbitrage Opportunity - Uniswap V3
-Path: USDC → WETH → USDT → USDC
-Notional Amount: 1000.0 USDC
-
-  Step 1: 1000.000000 USDC → 0.498500 WETH
-  Step 2: 0.498500 WETH → 995.251511 USDT
-  Step 3: 995.251511 USDT → 1010.126540 USDC
-
-💰 Gross Profit: 101.27 bps
-💸 Net Profit:   41.16 bps (after gas & slippage)
-✅ Good opportunity
+🔍 Scan   1 | UNI $3245.67 | SUSHI $3246.12 | dir=UNI→SUSHI | size=$250.00 | gross=$0.35 gas=$0.12 net=$0.23 | EXEC
+🔍 Scan   2 | UNI $3245.89 | SUSHI $3245.78 | dir=SUSHI→UNI | size=$100.00 | gross=$0.08 gas=$0.12 net=$-0.04 | skip
+🔍 Scan   3 | UNI $3246.01 | SUSHI $3245.95 | dir=(no edge) | size=$0.00 | gross=$-1000000000000000000.00 gas=$0.12 net=$-1000000000000000000.12 | skip
+🔍 Scan   4 | UNI $3245.34 | SUSHI $3246.21 | dir=UNI→SUSHI | size=$500.00 | gross=$0.89 gas=$0.12 net=$0.77 | EXEC
+🔍 Scan   5 | UNI $3245.67 | SUSHI $3245.89 | dir=UNI→SUSHI | size=$150.00 | gross=$0.18 gas=$0.12 net=$0.06 | EXEC
+💼 Equity: $1,001.06 (Δ $1.06, +0.11%)
 ```
+
+### Pool Addresses (Ethereum Mainnet)
+
+The system monitors these pools:
+- **Uniswap V2 USDC/WETH**: `0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc`
+- **SushiSwap USDC/WETH**: `0x397FF1542f962076d0BFE58eA045FfA2d347ACa0`
+
+### Economics
+
+**Fees:**
+- Uniswap V2: 0.30% per swap
+- SushiSwap: 0.30% per swap
+- **Total round-trip**: 0.60% (buy + sell)
+
+**Gas Costs:**
+- Typical: ~180k gas
+- At 12 gwei + $3000 ETH: ~$0.12 per arbitrage
+
+**Breakeven:**
+- Need gross profit > 0.60% + gas cost
+- Example: $250 trade needs >$1.50 gross + $0.12 gas = $1.62 profit
+
+### Next Steps
+
+See `triangular_arbitrage_dex/README.md` for:
+- Adding more pool pairs
+- Uniswap V3 integration
+- Multi-hop routes
+- Live execution setup
+
+## DEX Paper Trading (New V2 Scanner)
+
+A lightweight, standalone DEX arbitrage paper trading scanner for cross-venue opportunities. This is a **console-based** tool that scans Uniswap V2-style pools across multiple DEXes in real-time.
+
+### Features
+
+- **Cross-DEX Arbitrage**: Find price differences between Uniswap, SushiSwap, BaseSwap, etc.
+- **V2 Constant-Product Math**: Accurate swap simulation with fees embedded
+- **Paper Mode Only**: No wallet needed, no transaction submission
+- **Console UX**: Matches the CEX runner's "Scan N" style output
+- **Configurable**: YAML-based config for tokens, DEXes, and parameters
+- **Depth Guards**: Automatically rejects trades >10% of pool reserves
+- **EMA Tracking**: Tracks EMA15 of gross/net profits over scans
+- **Gas Awareness**: Optional gas cost override for realistic P&L
+
+### Installation
+
+```bash
+# Install dependencies (web3, pyyaml already in requirements.txt)
+pip install -r requirements.txt
+```
+
+### Configuration
+
+1. **Copy the example config:**
+   ```bash
+   cp configs/dex_mev.example.yaml configs/dex_mev.yaml
+   ```
+
+2. **Edit `configs/dex_mev.yaml`:**
+   ```yaml
+   # RPC endpoint
+   rpc_url: "https://mainnet.base.org"
+
+   # Scanning
+   poll_sec: 6
+   once: false  # Set true for single scan (testing)
+
+   # Trading parameters
+   usd_token: "USDC"
+   max_position_usd: 1000
+   slippage_bps: 5  # 0.05% slippage cushion
+   threshold_net_pct: 0.0  # Minimum net profit %
+
+   # Gas (optional override)
+   gas_price_gwei: 0.5
+   gas_limit: 220000
+   # gas_cost_usd_override: 0.05  # Uncomment to subtract per cycle
+
+   # Tokens
+   tokens:
+     WETH:
+       address: "0x4200000000000000000000000000000000000006"
+       decimals: 18
+     USDC:
+       address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+       decimals: 6
+
+   # DEXes (replace placeholder addresses with real pool contracts!)
+   dexes:
+     - name: "uniswap"
+       kind: "v2"
+       fee_bps: 30
+       pairs:
+         - name: "WETH/USDC"
+           address: "0xYOUR_UNISWAP_PAIR_ADDRESS"
+           base: "WETH"
+           quote: "USDC"
+     - name: "sushiswap"
+       kind: "v2"
+       fee_bps: 30
+       pairs:
+         - name: "WETH/USDC"
+           address: "0xYOUR_SUSHI_PAIR_ADDRESS"
+           base: "WETH"
+           quote: "USDC"
+   ```
+
+3. **Find real pool addresses:**
+   - Go to BaseScan, Etherscan, or the DEX's interface
+   - Search for the pair (e.g., "WETH/USDC pool")
+   - Copy the pair contract address (not the router!)
+
+### Running the Scanner
+
+```bash
+# Run continuous scanning
+python3 run_dex_paper.py
+
+# Use custom config
+python3 run_dex_paper.py --config configs/dex_mev.yaml
+
+# Single scan (for testing/CI)
+python3 run_dex_paper.py --once
+```
+
+### Example Output
+
+```
+================================================================================
+📝 DEX PAPER MODE — scanning for cross-DEX arbitrage
+================================================================================
+🔍 Pools: 4 | Poll: 6s | Once: False
+💰 Size: $1000 | Threshold: 0.10% NET
+   (need gross ≥ 0.20% = thr(0.10%) + slip(0.05%) + gas(0.05%))
+================================================================================
+
+🔍 Scan 1
+--------------------------------------------------------------------------------
+   1. USDC -> WETH (uniswap) -> USDC (sushiswap) [WETH/USDC]: gross=+0.42% slip=0.05% gas=0.05% net=+0.32%
+   2. USDC -> WETH (baseswap) -> USDC (uniswap) [WETH/USDC]: gross=+0.28% slip=0.05% gas=0.05% net=+0.18%
+   3. USDC -> WETH (sushiswap) -> USDC (baseswap) [WETH/USDC]: gross=+0.15% slip=0.05% gas=0.05% net=+0.05%
+
+  → 3 above 0.10% threshold | EMA15 g=+0.42% n=+0.32% | cycles=6 | size≈$1000 hyp_P&L=$9.60 | EV/scan=$3.20
+--------------------------------------------------------------------------------
+
+🔍 Scan 2
+--------------------------------------------------------------------------------
+   1. USDC -> WETH (uniswap) -> USDC (sushiswap) [WETH/USDC]: gross=+0.08% slip=0.05% gas=0.05% net=-0.02%
+
+  ✗ why: best_net=-0.02% (< thr by -0.12%), gross=+0.08% – slip=0.05% gas=0.05%
+
+  → 0 above 0.10% threshold | EMA15 g=+0.25% n=+0.15% | cycles=6 | size≈$1000 hyp_P&L=$0.00 | EV/scan=$1.60
+--------------------------------------------------------------------------------
+```
+
+### How It Works
+
+1. **Fetch Reserves**: Calls `getReserves()` on all configured V2 pairs
+2. **Normalize Orientation**: Flips reserves if needed to match config's (base, quote)
+3. **Simulate Cycles**: For each pair of venues with matching pairs:
+   - Direction 1: Buy base on Dex A, sell base on Dex B
+   - Direction 2: Buy base on Dex B, sell base on Dex A
+4. **Constant Product Formula**:
+   ```
+   amountInWithFee = amountIn * (1 - fee)
+   amountOut = (amountInWithFee * reserveOut) / (reserveIn + amountInWithFee)
+   ```
+5. **Apply Costs**:
+   - Slippage haircut on final proceeds
+   - Gas cost (if override set)
+6. **Rank & Print**: Top 10 by net profit, with "why" line if below threshold
+
+### Breakeven Calculation
+
+```
+breakeven_gross = threshold_net_pct + slippage_pct + gas_pct
+```
+
+Example:
+- Threshold: 0.10%
+- Slippage: 0.05%
+- Gas: $0.50 / $1000 = 0.05%
+- **Breakeven: 0.20% gross**
+
+### Depth Guard
+
+Trades consuming >10% of a pool's reserves are automatically rejected to prevent excessive slippage. Adjust `MAX_DEPTH_FRACTION` in `dex/runner.py` if needed.
+
+### Testing
+
+```bash
+# Run unit tests
+pytest tests/test_dex_paper.py -v
+
+# Single scan for smoke test
+python3 run_dex_paper.py --once
+
+# Test with mock config
+python3 -c "from dex.config import load_config; print(load_config('configs/dex_mev.yaml'))"
+```
+
+### Notes
+
+- **Paper mode only**: No transactions will be submitted
+- **V2 only**: V3 support is stubbed for future implementation
+- **RPC rate limits**: Use a paid RPC provider for high-frequency scanning
+- **Fees are embedded**: Pool fees are part of the swap math, not deducted separately
+- **Gas is informational**: Unless `gas_cost_usd_override` is set, gas doesn't affect net%
+
+### Roadmap
+
+- [ ] Uniswap V3 support (Quoter integration)
+- [ ] Multi-hop routes (A→B→C→D)
+- [ ] Sandwich detection
+- [ ] JIT liquidity monitoring
+- [ ] Liquidation opportunities
+- [ ] Live execution mode (wallet integration)
+
+### Configuration Examples
+
+See `configs/dex_mev.example.yaml` for:
+- Multi-chain setups (Ethereum, Base, Arbitrum)
+- Multiple token pairs
+- Custom fee tiers
+- Gas cost overrides
 
 ## Documentation
 

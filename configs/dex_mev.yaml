@@ -1,0 +1,74 @@
+# DEX/MEV Paper Trading Configuration
+# Ready-to-run config for Base mainnet with placeholder pool addresses
+
+# ===== RPC & Scanning =====
+rpc_url: "https://mainnet.base.org"
+poll_sec: 6
+once: false
+
+# ===== Trading Parameters =====
+usd_token: "USDC"
+max_position_usd: 1000
+slippage_bps: 5
+threshold_net_pct: 0.0
+
+# ===== Gas Cost (Informational) =====
+gas_price_gwei: 0.5
+gas_limit: 220000
+# gas_cost_usd_override: 0.05
+
+# ===== Token Definitions =====
+tokens:
+  WETH:
+    address: "0x4200000000000000000000000000000000000006"  # Base WETH
+    decimals: 18
+
+  USDC:
+    address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # Base USDC
+    decimals: 6
+
+# ===== DEX Definitions =====
+# NOTE: Finding V2-style pools on Base is challenging because:
+# - Uniswap V3 dominates (not yet supported by this scanner)
+# - BaseSwap and other V2 forks have limited WETH/USDC liquidity
+# - Most DEXes use custom AMM models
+#
+# RECOMMENDATION:
+# 1. Use configs/dex_mev_eth_test.yaml to test the system on Ethereum
+# 2. Manually search BaseScan for V2-style pair contracts
+# 3. Use scripts/check_pair.py to verify any address you find
+#
+# For now, this config needs valid Base V2 pool addresses.
+# Use configs/dex_mev_eth_test.yaml for a working Ethereum example.
+# Or use scripts/scan_base_pairs.py to find real Base pools.
+
+dexes: []
+  # Example - uncomment and replace with verified addresses:
+  # - name: "baseswap"
+  #   kind: "v2"
+  #   fee_bps: 25
+  #   pairs:
+  #     - name: "WETH/USDC"
+  #       address: "0xYOUR_VERIFIED_PAIR_ADDRESS_HERE"
+  #       base: "WETH"
+  #       quote: "USDC"
+  #
+  # - name: "sushiswap"
+  #   kind: "v2"
+  #   fee_bps: 30
+  #   pairs:
+  #     - name: "WETH/USDC"
+  #       address: "0xYOUR_VERIFIED_PAIR_ADDRESS_HERE"
+  #       base: "WETH"
+  #       quote: "USDC"
+
+# NOTE: You need at least 2 DEXes with the same pair for cross-DEX arbitrage!
+#
+# To find pools:
+#   python3 scripts/scan_base_pairs.py --rpc YOUR_ALCHEMY_URL --blocks 500000
+#
+# To verify pools:
+#   python3 scripts/check_pair.py https://mainnet.base.org 0xPAIR_ADDRESS
+#
+# To test the system:
+#   python3 run_dex_paper.py --config configs/dex_mev_eth_test.yaml
