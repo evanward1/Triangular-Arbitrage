@@ -1556,7 +1556,7 @@ class RealTriangularArbitrage:
     def _log_start_equity_breakdown(self):
         """Log detailed breakdown of starting equity"""
         total = 0.0
-        logger.info("Start equity breakdown:")
+        logger.debug("Start equity breakdown:")
         bals = self.paper_balances if self.trading_mode == "paper" else self.balances
 
         for asset, balance in bals.items():
@@ -1585,9 +1585,9 @@ class RealTriangularArbitrage:
 
             val = float(qty) * float(px)
             total += val
-            logger.info(f"  {asset}: qty={qty:.8f} px={px:.8f} val=${val:.2f}")
+            logger.debug(f"  {asset}: qty={qty:.8f} px={px:.8f} val=${val:.2f}")
 
-        logger.info(f"Start equity sum: ${total:.2f}")
+        logger.debug(f"Start equity sum: ${total:.2f}")
 
     def _equity_usd(self):
         """Calculate total equity in USD (mark-to-market)"""
@@ -2378,7 +2378,7 @@ class RealTriangularArbitrage:
                             continue
 
                     # Check order book depth for each trade in the cycle (enforced in both paper and live)
-                    logger.info("📖 Checking order book depth...")
+                    logger.debug("📖 Checking order book depth...")
                     depth_check_passed = True
                     amount = self.max_position_size
 
@@ -2418,7 +2418,7 @@ class RealTriangularArbitrage:
                             slippage = (
                                 abs(avg_price - ticker_price) / ticker_price * 100
                             )
-                            logger.info(
+                            logger.debug(
                                 f"  ✅ Step {i+1} "
                                 f"({from_currency}->{to_currency}): "
                                 f"{symbol} has sufficient liquidity "
@@ -2430,7 +2430,7 @@ class RealTriangularArbitrage:
                         amount = amount * depth.get("avg_price", 1.0) * 0.999
 
                     if not depth_check_passed:
-                        logger.info(
+                        logger.debug(
                             "❌ Skipping opportunity due to insufficient liquidity"
                         )
                         continue
@@ -2440,7 +2440,7 @@ class RealTriangularArbitrage:
 
                     # CRITICAL: Check per-leg slippage caps FIRST before any size gating
                     # Use max position size for slippage estimation to check worst case
-                    logger.info("📖 Checking per-leg slippage caps...")
+                    logger.debug("📖 Checking per-leg slippage caps...")
                     (
                         estimated_slippage,
                         per_leg_details,
@@ -2471,7 +2471,7 @@ class RealTriangularArbitrage:
                             f"LEG{i}={leg['slippage_pct']:.3f}%"
                             for i, leg in enumerate(per_leg_details, 1)
                         )
-                        logger.info(
+                        logger.debug(
                             f"   ✅ Slip[{leg_slip_str}] (cap={max_slippage_leg_pct:.2f}%)"
                         )
 
@@ -2481,7 +2481,7 @@ class RealTriangularArbitrage:
                     )
 
                     # Check depth-limited size
-                    logger.info("📏 Computing depth-limited size...")
+                    logger.debug("📏 Computing depth-limited size...")
                     depth_limited_size_usd = await self.compute_depth_limited_size(
                         cycle, self.max_position_size
                     )
@@ -2511,7 +2511,7 @@ class RealTriangularArbitrage:
 
                     # Use depth-limited size for execution
                     execution_size = depth_limited_size_usd
-                    logger.info(f"   ✅ Depth-limited size: ${execution_size:.2f}")
+                    logger.debug(f"   ✅ Depth-limited size: ${execution_size:.2f}")
 
                     # Re-validate slippage with actual execution size
                     (
@@ -2521,7 +2521,7 @@ class RealTriangularArbitrage:
 
                     # Recalculate net profit with real slippage at execution size
                     real_net_profit = gross_profit - fee_cost_pct - real_slippage
-                    logger.info(
+                    logger.debug(
                         f"   Real slippage: {real_slippage:.3f}% → net profit: {real_net_profit:.3f}%"
                     )
 
@@ -2539,7 +2539,7 @@ class RealTriangularArbitrage:
                     if result.get("success"):
                         executed_count += 1
                         self.execution_stats["full_fills"] += 1
-                        logger.info(
+                        logger.debug(
                             f"✅ Opportunity {opp_idx + 1} executed successfully!"
                         )
                         # Update balances after successful trade
@@ -2574,7 +2574,7 @@ class RealTriangularArbitrage:
                 await self.equity_tracker.on_scan(self.get_cash, self.get_asset_value)
 
                 # Wait before next cycle
-                logger.info("🔄 Searching for next opportunity...")
+                logger.debug("🔄 Searching for next opportunity...")
                 await asyncio.sleep(15)
 
         except KeyboardInterrupt:
