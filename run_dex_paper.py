@@ -53,6 +53,13 @@ Examples:
         help="Run a single scan and exit (overrides config setting)",
     )
 
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Quiet mode: only show opportunities + batch summaries (less noise)",
+    )
+
     return parser.parse_args()
 
 
@@ -81,7 +88,7 @@ def main() -> int:
 
     # Initialize runner
     try:
-        runner = DexRunner(config)
+        runner = DexRunner(config, quiet=args.quiet)
         runner.connect()
         runner.build_token_maps()
         runner.fetch_pools()

@@ -33,14 +33,16 @@ class DexRunner:
     top opportunities with detailed P&L breakdown.
     """
 
-    def __init__(self, config: DexConfig):
+    def __init__(self, config: DexConfig, quiet: bool = False):
         """
         Initialize runner with config.
 
         Args:
             config: Validated DexConfig instance
+            quiet: If True, only show opportunities + batch summaries (less noise)
         """
         self.config = config
+        self.quiet = quiet
         self.web3: Optional[Web3] = None
         self.pools: List[DexPool] = []
 
@@ -54,6 +56,11 @@ class DexRunner:
         self.ema_gross: Optional[float] = None
         self.ema_net: Optional[float] = None
         self.pnl_history: deque = deque(maxlen=15)  # Last 15 scans for EV calculation
+
+        # Quiet mode batch tracking
+        self.batch_start_scan = 1
+        self.batch_size = 10
+        self.batch_best_net = None
 
     def connect(self) -> None:
         """
@@ -361,6 +368,32 @@ class DexRunner:
             rows: Sorted list of ArbRow results
             scan_num: Current scan number
         """
+        # Check for opportunities (net >= threshold)
+        opportunities = [r for r in rows if r.net_pct >= self.config.threshold_net_pct]
+
+        # In quiet mode, batch scans and only show opportunities
+        if self.quiet:
+            # Track best net for batch
+            if rows:
+                best_net = rows[0].net_pct
+                if self.batch_best_net is None or best_net > self.batch_best_net:
+                    self.batch_best_net = best_net
+
+            # If opportunity found, print it immediately
+            if opportunities:
+                self._print_opportunity(opportunities[0], scan_num)
+                self.batch_best_net = None  # Reset batch tracking
+                self.batch_start_scan = scan_num + 1
+                return
+
+            # Print batch summary every N scans
+            if scan_num % self.batch_size == 0:
+                self._print_batch_summary(self.batch_start_scan, scan_num)
+                self.batch_start_scan = scan_num + 1
+                self.batch_best_net = None
+            return
+
+        # Normal mode: print full details for every scan
         print(f"\n🔍 Scan {scan_num}")
         print("-" * 80)
 
@@ -395,7 +428,7 @@ class DexRunner:
             )
 
         # Footer with stats
-        above_thr = sum(1 for r in rows if r.net_pct >= self.config.threshold_net_pct)
+        above_thr = len(opportunities)
 
         ema_str = ""
         if self.ema_gross is not None:
@@ -418,6 +451,50 @@ class DexRunner:
             f"EV/scan=${ev_scan:.2f}"
         )
         print("-" * 80)
+
+    def _print_opportunity(self, row: ArbRow, scan_num: int) -> None:
+        """Print a single opportunity (for quiet mode)."""
+        print(f"\n✨ OPPORTUNITY FOUND! (Scan {scan_num})")
+        print("=" * 80)
+        print(f"  {row.cycle}")
+        print(
+            f"  Gross: {row.gross_pct:+.2f}% | Slip: {self.config.slippage_pct:.2f}%",
+            end="",
+        )
+        if self.config.gas_cost_usd_override:
+            print(f" | Gas: {self.config.gas_pct:.2f}%", end="")
+        print(f" | Net: {row.net_pct:+.2f}% ✅")
+        print(
+            f"  Expected profit: ${abs(row.pnl_usd):.2f} on ${self.config.max_position_usd}"
+        )
+        print(
+            f"  Would execute: YES (net={row.net_pct:.2f}% > threshold={self.config.threshold_net_pct:.2f}%)"
+        )
+        print("=" * 80)
+
+    def _print_batch_summary(self, start_scan: int, end_scan: int) -> None:
+        """Print summary for a batch of scans (for quiet mode)."""
+        ema_str = ""
+        if self.ema_gross is not None:
+            ema_str = (
+                f" | avg_gross={self.ema_gross:+.2f}% avg_net={self.ema_net:+.2f}%"
+            )
+
+        best_str = ""
+        if self.batch_best_net is not None:
+            indicator = "🔴"
+            if self.batch_best_net >= self.config.threshold_net_pct:
+                indicator = "🟢"
+            best_str = f" | best_net={self.batch_best_net:+.2f}% {indicator}"
+
+        ev_str = ""
+        if self.pnl_history:
+            ev_scan = sum(self.pnl_history) / len(self.pnl_history)
+            ev_str = f" | EV/scan=${ev_scan:.2f}"
+
+        print(
+            f"⏱  Scans {start_scan}-{end_scan}: 0 opportunities{best_str}{ema_str}{ev_str}"
+        )
 
     def run(self) -> None:
         """

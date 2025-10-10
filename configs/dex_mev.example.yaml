@@ -1,110 +1,113 @@
 # DEX/MEV Paper Trading Configuration Template
 # Copy to dex_mev.yaml and customize with your values
 
-# ===== RPC & Scanning =====
-# RPC endpoint for your target chain
-# Examples:
-#   - Base: https://mainnet.base.org
-#   - Ethereum: https://eth.llamarpc.com
-#   - Arbitrum: https://arb1.arbitrum.io/rpc
-rpc_url: "https://mainnet.base.org"
+# ===== Network Configuration =====
+network: "ethereum"
+chain_id: 1
 
-# Seconds between scans
-poll_sec: 6
-
-# If true, run a single scan and exit (useful for testing/CI)
-once: false
+# RPC configuration (environment variables)
+rpc_url_env: "ETH_RPC_URL"
+rpc_primary: ""  # Optional: Direct RPC URL (overrides env var)
+rpc_backups: []
+private_key_env: "PRIVATE_KEY"
 
 # ===== Trading Parameters =====
-# Quote token symbol (must be defined in tokens section below)
-# This is the token you start and end with in arbitrage cycles
-usd_token: "USDC"
+# Base asset for arbitrage cycles (must be defined in tokens section)
+base_asset: "USDC"
 
-# Maximum position size in USD
-# This is the notional amount used for each simulated trade
-max_position_usd: 1000
+# Minimum profit threshold in basis points (after all costs)
+# Paper mode: 0 to see all opportunities
+# Live mode: 20+ (0.2%) recommended
+min_profit_bps: 0
 
-# Slippage haircut in basis points (applied to final proceeds)
-# Example: 5 = 0.05% slippage cushion
-slippage_bps: 5
+# Legacy slippage field (kept for compatibility, use per_leg/cycle instead)
+max_slippage_bps: 50
 
-# Minimum net profit threshold in percentage
-# Opportunities below this won't be considered for execution
-# Paper mode: set to 0.0 to see all opportunities
-threshold_net_pct: 0.0
+# ===== Slippage Caps =====
+# Per-leg slippage cap: Maximum slippage allowed for ANY single swap
+# Example: 50 = 0.5% max per leg
+per_leg_slippage_bps: 50
 
-# ===== Gas Cost (Informational) =====
-# Gas price in Gwei (for display purposes)
-gas_price_gwei: 0.5
+# Cycle slippage cap: Maximum total slippage across ALL legs
+# Example: 100 = 1% max total
+cycle_slippage_bps: 100
 
-# Gas limit estimate for a typical 2-leg arbitrage
-gas_limit: 220000
+# ===== Gas Configuration =====
+# Maximum base fee in gwei (abort if network gas > this)
+max_base_fee_gwei: 50
 
-# Optional: Override gas cost in USD (uncomment to use)
-# If set, this will be subtracted from P&L per cycle
-# Useful when gas costs are stable or you want conservative estimates
-# gas_cost_usd_override: 0.05
+# Maximum priority fee in gwei
+max_priority_fee_gwei: 2
+
+# Gas limit cap for transactions
+gas_limit_cap: 500000
+
+# ===== Private Transaction Configuration =====
+# Enable private transaction submission via MEV relay (Flashbots)
+private_tx_enabled: false
+
+# MEV relay endpoint (e.g., Flashbots)
+mev_relay: ""
+
+# Simulation RPC endpoint (for pre-flight checks)
+simulation_rpc: ""
+
+# ===== Execution Options =====
+# Use exactAmountIn (true) vs exactAmountOut (false)
+exact_in: true
+
+# Submit as bundle (true) vs single transaction (false)
+use_bundle: false
+
+# Legacy Flashbots fields (kept for backward compatibility)
+use_flashbots: false
+coinbase_tip_gwei: 0
 
 # ===== Token Definitions =====
-# Define all tokens used in your pairs
-# Each token needs:
-#   - address: Checksummed contract address
-#   - decimals: Token decimals (18 for most, 6 for USDC/USDT)
+# Define all tokens used in your arbitrage routes
 tokens:
-  WETH:
-    address: "0x4200000000000000000000000000000000000006"  # Base WETH
-    decimals: 18
-
   USDC:
-    address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # Base USDC
+    address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # Ethereum USDC
     decimals: 6
 
-  # Add more tokens as needed
-  # DAI:
-  #   address: "0x..."
-  #   decimals: 18
+  WETH:
+    address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # Ethereum WETH
+    decimals: 18
 
-# ===== DEX Definitions =====
-# Define all DEXes and their pairs to monitor
-# Currently only "v2" (constant-product) is supported
-# Each DEX needs:
-#   - name: Unique identifier
-#   - kind: "v2" (v3 coming soon)
-#   - fee_bps: Pool fee in basis points (30 = 0.3%)
-#   - pairs: List of pool addresses to monitor
-dexes:
-  - name: "uniswap"
-    kind: "v2"
-    fee_bps: 30
-    pairs:
-      - name: "WETH/USDC"
-        address: "0xYOUR_UNISWAP_WETH_USDC_PAIR_ADDRESS"  # REPLACE WITH ACTUAL PAIR
-        base: "WETH"
-        quote: "USDC"
+  USDT:
+    address: "0xdAC17F958D2ee523a2206206994597C13D831ec7"  # Ethereum USDT
+    decimals: 6
 
-  - name: "sushiswap"
-    kind: "v2"
-    fee_bps: 30
-    pairs:
-      - name: "WETH/USDC"
-        address: "0xYOUR_SUSHI_WETH_USDC_PAIR_ADDRESS"  # REPLACE WITH ACTUAL PAIR
-        base: "WETH"
-        quote: "USDC"
-
-  # Add more DEXes and pairs as needed
-  # - name: "baseswap"
-  #   kind: "v2"
-  #   fee_bps: 25
-  #   pairs:
-  #     - name: "WETH/USDC"
-  #       address: "0x..."
-  #       base: "WETH"
-  #       quote: "USDC"
+# ===== Arbitrage Routes =====
+# Define the arbitrage routes to evaluate
+# Format: base -> mid -> alt -> base
+routes:
+  - base: "USDC"
+    mid: "WETH"
+    alt: "USDT"
+    dex_name: "UniswapV2"
+    pool_addresses:
+      - "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"  # USDC/WETH
+      - "0x0d4a11d5EEaaC28EC3F61d100daF4d40471f1852"  # WETH/USDT
+      - "0x3041CbD36888bECc7bbCBc0045E3B1f144466f5f"  # USDT/USDC
 
 # ===== Notes =====
-# 1. Make sure all pair addresses are correct for your target chain
-# 2. Token addresses must match what's in the pair contracts
-# 3. fee_bps should match the actual pool fee (30 = 0.3% for most Uni V2 forks)
-# 4. The scanner will try all combinations of pairs with matching base/quote
-# 5. Depth guard: trades >10% of pool reserves are automatically rejected
-# 6. This is PAPER MODE only - no transactions will be submitted
+# Paper Mode Configuration:
+#   - Set min_profit_bps: 0 to see all opportunities
+#   - No RPC or private key needed
+#   - Uses mock data for demonstration
+#
+# Live Mode Configuration:
+#   - Set environment variables: ETH_RPC_URL, PRIVATE_KEY
+#   - Set min_profit_bps: 20+ (0.2% minimum recommended)
+#   - Enable private_tx_enabled: true
+#   - Configure mev_relay and simulation_rpc
+#
+# Slippage Protection:
+#   - per_leg_slippage_bps: Max slippage per individual swap
+#   - cycle_slippage_bps: Max total slippage across all swaps
+#   - Both must pass for route to be accepted
+#
+# Gas Policy:
+#   - Transactions abort if gas > max_base_fee_gwei
+#   - Opportunities rejected if gas cost pushes profit below min_profit_bps

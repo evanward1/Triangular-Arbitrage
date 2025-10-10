@@ -37,30 +37,36 @@ cp .env.example .env
 
 ### Running the System
 
+The system provides a unified command-line interface through `run_clean.py`:
+
+**Interactive Mode (Recommended for Beginners)**
+```bash
+# Interactive menu - choose CEX/DEX and paper/live trading
+python run_clean.py
+```
+
 **CEX Arbitrage (Centralized Exchanges)**
 ```bash
-# Interactive mode - choose paper or live trading
-python run_clean.py
-
 # Paper trading mode (safe simulation)
-python run_clean.py 1
+python run_clean.py cex --paper
 
 # Live trading mode (real money - requires API keys)
-python run_clean.py 2
+python run_clean.py cex --live
 ```
 
 **DEX/MEV Arbitrage (Decentralized Exchanges)**
 ```bash
-# Set up RPC endpoint in .env
-# RPC_URL=https://mainnet.infura.io/v3/YOUR_KEY
+# Paper trading mode (quiet output, single scan for testing)
+python run_clean.py dex --quiet --once
 
-# Run V2 cross-DEX paper trading (USDC/WETH on Uniswap vs Sushi)
-python run_dex.py
+# Continuous paper trading (quiet mode)
+python run_clean.py dex --quiet
 
-# Configure parameters in .env:
-# START_CASH_USDC=1000   # Starting capital
-# GAS_PRICE_GWEI=12      # Current gas price
-# SCAN_SEC=10            # Scan frequency
+# Custom config file
+python run_clean.py dex --config configs/dex_mev.yaml
+
+# Live trading mode (requires wallet setup - see DEX section below)
+python run_clean.py dex --live --config configs/dex_mev.yaml
 ```
 
 ## Configuration
@@ -724,14 +730,20 @@ pip install -r requirements.txt
 ### Running the Scanner
 
 ```bash
-# Run continuous scanning
-python3 run_dex_paper.py
+# Run continuous scanning (via unified interface)
+python run_clean.py dex
 
 # Use custom config
-python3 run_dex_paper.py --config configs/dex_mev.yaml
+python run_clean.py dex --config configs/dex_mev.yaml
 
 # Single scan (for testing/CI)
-python3 run_dex_paper.py --once
+python run_clean.py dex --once
+
+# Quiet mode (less verbose output)
+python run_clean.py dex --quiet --once
+
+# Or use the direct runner (advanced)
+python3 run_dex_paper.py --config configs/dex_mev.yaml --quiet --once
 ```
 
 ### Example Output
