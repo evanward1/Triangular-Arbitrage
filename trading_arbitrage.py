@@ -69,6 +69,15 @@ class RealTriangularArbitrage:
         # Sizing configuration
         self.min_fraction_of_target = float(os.getenv("MIN_FRACTION_OF_TARGET", "0.05"))
 
+        # Slippage estimation
+        self.slippage_pct_estimate = float(os.getenv("SLIPPAGE_PCT_ESTIMATE", "0.05"))
+        self.slippage_mode = os.getenv(
+            "SLIPPAGE_MODE", "static"
+        ).lower()  # 'static' or 'dynamic'
+        self.slippage_floor_bps = float(
+            os.getenv("SLIPPAGE_FLOOR_BPS", "2")
+        )  # Minimum slippage in basis points
+
         # Display settings
         self.verbosity = os.getenv("VERBOSITY", "normal").lower()
         self.topn = int(os.getenv("TOPN", "3"))
@@ -122,6 +131,9 @@ class RealTriangularArbitrage:
             float(os.getenv("NEAR_MISS_BPS", "5")) / 100
         )  # Convert to percent
 
+        # CSV logging
+        self.write_scan_csv = os.getenv("WRITE_SCAN_CSV", "false").lower() == "true"
+
         # Paper balance defaults
         self.paper_usdt = float(os.getenv("PAPER_USDT", "1000"))
         self.paper_usdc = float(os.getenv("PAPER_USDC", "1000"))
@@ -151,12 +163,39 @@ class RealTriangularArbitrage:
             s.strip().upper() for s in self.exclude_symbols if s.strip()
         ]
 
+        # Stablecoin filtering
+        self.exclude_stablecoin_only = (
+            os.getenv("EXCLUDE_STABLECOIN_ONLY", "true").lower() == "true"
+        )
+        self.stablecoins = {
+            "USD",
+            "USDT",
+            "USDC",
+            "BUSD",
+            "DAI",
+            "TUSD",
+            "USDP",
+            "USDDOLLAR",
+            "FDUSD",
+            "USDD",
+            "USDE",  # TRON, Bybit stables
+        }
+
         # Depth and polling
         self.depth_levels = int(os.getenv("DEPTH_LEVELS", "20"))
         self.poll_sec = int(os.getenv("POLL_SEC", "10"))
+        self.depth_size_max_slippage_pct = float(
+            os.getenv("DEPTH_SIZE_MAX_SLIPPAGE_PCT", "0.30")
+        )  # Max slippage per leg when computing depth-limited size
 
         # Fee source
         self.fee_source = os.getenv("FEE_SOURCE", "static").lower()
+
+        # Execution fee assumptions (for more accurate opportunity filtering)
+        self.expected_maker_legs = int(os.getenv("EXPECTED_MAKER_LEGS", "2"))  # 0-3
+        self.maker_prob = float(
+            os.getenv("MAKER_PROB", "0.6")
+        )  # Probability of maker fill
 
         # Live safety
         self.live_confirm = os.getenv("LIVE_CONFIRM", "NO").upper()
@@ -272,6 +311,27 @@ class RealTriangularArbitrage:
             raise RuntimeError(
                 f"{operation_name} failed without exception"
             )  # noqa: F541
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        """Normalize symbol for consistent comparisons"""
+        # Uppercase, strip whitespace, remove common separators
+        normalized = (
+            symbol.strip().upper().replace("-", "").replace("_", "").replace(".", "")
+        )
+        # Handle common aliases
+        if normalized in ["USDDOLLAR", "USDOLLAR"]:
+            normalized = "USD"
+        return normalized
+
+    def _clamp_for_display(
+        self, value: float, min_val: float = -10.0, max_val: float = 10.0
+    ) -> float:
+        """Clamp profit percentages to reasonable display range"""
+        if value < min_val:
+            return min_val
+        elif value > max_val:
+            return max_val
+        return value
 
     def _setup_exchange(self):
         """Setup exchange with API credentials"""
@@ -524,6 +584,45 @@ class RealTriangularArbitrage:
         except Exception:
             return False
 
+    async def panic_sell(
+        self, currency: str, amount: float, target_currency: str
+    ) -> Dict:
+        """Emergency sell to return to starting currency after failed trade"""
+        try:
+            logger.warning(
+                f"🚨 PANIC SELL: Converting {amount:.4f} {currency} back to {target_currency}"
+            )
+
+            # Try direct pair first
+            direct_pair = f"{currency}/{target_currency}"
+            reverse_pair = f"{target_currency}/{currency}"
+
+            if direct_pair in self.symbols:
+                # Sell currency for target_currency
+                trade = await self.execute_trade(
+                    direct_pair, "sell", amount, order_type="taker"
+                )
+                if trade:
+                    logger.info(f"✅ Panic sell successful: {trade}")
+                    return {"success": True, "trade": trade}
+            elif reverse_pair in self.symbols:
+                # Buy target_currency with currency
+                trade = await self.execute_trade(
+                    reverse_pair, "buy", amount, order_type="taker"
+                )
+                if trade:
+                    logger.info(f"✅ Panic sell successful: {trade}")
+                    return {"success": True, "trade": trade}
+            else:
+                logger.error(
+                    f"❌ No direct trading pair found for panic sell: {currency} -> {target_currency}"
+                )
+                return {"success": False, "error": "No direct pair"}
+
+        except Exception as e:
+            logger.error(f"❌ Panic sell failed: {e}")
+            return {"success": False, "error": str(e)}
+
     async def execute_arbitrage_cycle(
         self,
         cycle: List[str],
@@ -607,6 +706,62 @@ class RealTriangularArbitrage:
                 if not trade:
                     logger.error(f"❌ Trade failed at step {i+1}")
                     self.execution_stats["timeouts"] += 1
+
+                    # If we're not at the first trade, we're holding an intermediate currency
+                    # Attempt panic sell back to starting currency
+                    if i > 0 and current_amount > 0:
+                        current_currency = cycle[i]
+                        logger.warning(
+                            f"⚠️ Holding {current_amount:.4f} {current_currency}, attempting panic sell..."
+                        )
+                        panic_result = await self.panic_sell(
+                            current_currency, current_amount, start_currency
+                        )
+
+                        if panic_result.get("success"):
+                            panic_trade = panic_result.get("trade")
+                            # Update amount after panic sell
+                            fee = panic_trade.get("fee", {}).get(
+                                "cost", current_amount * self.taker_fee
+                            )
+                            final_amount = (
+                                panic_trade.get("filled", current_amount) - fee
+                            )
+
+                            # Update paper balances if in paper mode
+                            if self.trading_mode == "paper":
+                                self.paper_balances[start_currency][
+                                    "free"
+                                ] += final_amount
+                                self.paper_balances[start_currency][
+                                    "total"
+                                ] += final_amount
+
+                            loss = start_balance - final_amount
+                            loss_pct = (loss / start_balance) * 100
+                            logger.warning(
+                                f"🚨 Panic sell completed. Loss: {loss:.4f} {start_currency} ({loss_pct:.2f}%)"
+                            )
+
+                            return {
+                                "success": False,
+                                "error": f"Trade {i+1} failed, panic sell executed",
+                                "panic_sell": True,
+                                "loss": loss,
+                                "loss_percent": loss_pct,
+                            }
+                        else:
+                            logger.error(
+                                f"❌ Panic sell failed! You may be holding {current_amount:.4f} {current_currency}"
+                            )
+                            return {
+                                "success": False,
+                                "error": f"Trade {i+1} failed, panic sell also failed",
+                                "panic_sell": False,
+                                "stranded_currency": current_currency,
+                                "stranded_amount": current_amount,
+                            }
+
                     break
 
                 trades.append(trade)
@@ -640,8 +795,38 @@ class RealTriangularArbitrage:
                     f"    Filled: {filled_amount}, Fee: {fee}, Remaining: {current_amount}"
                 )
 
-                # Small delay between trades
-                await asyncio.sleep(0.5)
+                # In live mode, wait for order confirmation before proceeding
+                # In paper mode, no need to wait since orders are simulated
+                if self.trading_mode == "live" and i < len(cycle) - 2:
+                    # Wait for order to be fully filled (up to 5 seconds)
+                    wait_start = time.time()
+                    max_wait = 5.0
+                    order_confirmed = False
+
+                    while (time.time() - wait_start) < max_wait:
+                        try:
+                            # Fetch order status
+                            order_status = self.exchange.fetch_order(
+                                trade["id"], symbol
+                            )
+                            if order_status["status"] in ["closed", "filled"]:
+                                order_confirmed = True
+                                logger.info(
+                                    f"    ✅ Order {trade['id']} confirmed as {order_status['status']}"
+                                )
+                                break
+                            await asyncio.sleep(0.1)
+                        except Exception as e:
+                            logger.warning(f"    ⚠️ Could not fetch order status: {e}")
+                            break
+
+                    if not order_confirmed:
+                        logger.warning(
+                            f"    ⚠️ Order confirmation timeout after {max_wait}s, proceeding anyway"
+                        )
+                elif self.trading_mode == "paper":
+                    # Small delay in paper mode for realism
+                    await asyncio.sleep(0.1)
 
             # Update paper balances with final amount
             if self.trading_mode == "paper":
@@ -836,7 +1021,11 @@ class RealTriangularArbitrage:
                     return 0.10
 
             # Use helper function to calculate slippage
-            return estimate_cycle_slippage_pct(books, amounts)
+            calculated_slippage = estimate_cycle_slippage_pct(books, amounts)
+
+            # Apply slippage floor
+            slippage_floor_pct = self.slippage_floor_bps / 100.0
+            return max(calculated_slippage, slippage_floor_pct)
 
         except Exception as e:
             logger.error(f"❌ Failed to estimate slippage: {e}")
@@ -879,7 +1068,9 @@ class RealTriangularArbitrage:
 
                 # Calculate depth-limited size for this leg
                 leg_max_size = depth_limited_size(
-                    book_side, best_price, max_slippage_pct=0.10
+                    book_side,
+                    best_price,
+                    max_slippage_pct=self.depth_size_max_slippage_pct,
                 )
 
                 if leg_max_size == 0:
@@ -985,18 +1176,46 @@ class RealTriangularArbitrage:
                             # Complete the cycle by returning to start
                             cycle = [curr_a, curr_b, curr_c, curr_a]
 
+                            # Filter out stablecoin-only triangles if enabled
+                            if self.exclude_stablecoin_only:
+                                # Normalize and check if all three currencies are stablecoins
+                                normalized_a = self._normalize_symbol(curr_a)
+                                normalized_b = self._normalize_symbol(curr_b)
+                                normalized_c = self._normalize_symbol(curr_c)
+                                cycle_currencies = {
+                                    normalized_a,
+                                    normalized_b,
+                                    normalized_c,
+                                }
+                                if cycle_currencies.issubset(self.stablecoins):
+                                    # Skip this stablecoin-only cycle
+                                    continue
+
                             # Calculate cycle profitability
                             gross_ratio = self._calculate_gross_cycle_profit(cycle)
                             if gross_ratio:
                                 # Calculate net after fees and slippage
                                 gross_profit_pct = (gross_ratio - 1) * 100
 
-                                # Fees: 3 legs × taker fee
-                                fee_cost_pct = 3 * (self.taker_fee * 100)
+                                # Fees: Use expected fee model based on maker/taker mix
+                                # expected_maker_legs determines how many legs we expect to fill as maker
+                                maker_legs_fee = (
+                                    self.expected_maker_legs * self.maker_fee
+                                )
+                                taker_legs_fee = (
+                                    3 - self.expected_maker_legs
+                                ) * self.taker_fee
+                                fee_cost_pct = (maker_legs_fee + taker_legs_fee) * 100
 
-                                # For initial filtering, use conservative static slippage
-                                # Real slippage will be calculated when executing
-                                slippage_pct_estimate = 0.05
+                                # For initial filtering, use slippage based on mode
+                                if self.slippage_mode == "dynamic":
+                                    # Use dynamic slippage from order book depth
+                                    # For now, we'll compute this for viable cycles only (below)
+                                    # Use static estimate for initial scan
+                                    slippage_pct_estimate = self.slippage_pct_estimate
+                                else:
+                                    # Use static slippage estimate
+                                    slippage_pct_estimate = self.slippage_pct_estimate
 
                                 # Net profit estimate
                                 net_profit_pct_estimate = (
@@ -1005,16 +1224,17 @@ class RealTriangularArbitrage:
                                     - slippage_pct_estimate
                                 )
 
-                                all_cycles.append(
-                                    {
-                                        "cycle": cycle,
-                                        "gross_profit_pct": gross_profit_pct,
-                                        "fee_cost_pct": fee_cost_pct,
-                                        "slippage_pct": slippage_pct_estimate,
-                                        "net_profit_pct": net_profit_pct_estimate,
-                                        "profit_ratio": gross_ratio,
-                                    }
-                                )
+                                # Store cycle with slippage info
+                                cycle_data = {
+                                    "cycle": cycle,
+                                    "gross_profit_pct": gross_profit_pct,
+                                    "fee_cost_pct": fee_cost_pct,
+                                    "slippage_pct": slippage_pct_estimate,
+                                    "net_profit_pct": net_profit_pct_estimate,
+                                    "profit_ratio": gross_ratio,
+                                    "slippage_used_pct": slippage_pct_estimate,  # Track what we actually used
+                                }
+                                all_cycles.append(cycle_data)
 
                                 # Only keep if net profit estimate exceeds threshold
                                 if net_profit_pct_estimate > self.min_profit_threshold:
@@ -1155,6 +1375,74 @@ class RealTriangularArbitrage:
                 )
         except Exception as e:
             logger.error(f"Near-miss CSV logging error: {e}")
+
+    def _log_scan_summary_to_csv(
+        self,
+        scan_num: int,
+        best_gross: float,
+        best_net: float,
+        gross_needed: float,
+        count_above: int,
+    ):
+        """Log comprehensive scan summary to CSV file"""
+        if not self.write_scan_csv:
+            return
+
+        try:
+            import csv
+            from datetime import datetime
+
+            os.makedirs("logs", exist_ok=True)
+
+            with open("logs/scan_summary.csv", "a", newline="") as f:
+                writer = csv.writer(f)
+                # Write header if file is new
+                if f.tell() == 0:
+                    writer.writerow(
+                        [
+                            "timestamp",
+                            "scan",
+                            "best_gross_pct",
+                            "best_net_pct",
+                            "gross_needed_pct",
+                            "gap_pct",
+                            "slippage_mode",
+                            "slippage_used_pct",
+                            "fee_per_leg_pct",
+                            "threshold_pct",
+                            "count_above_threshold",
+                        ]
+                    )
+
+                # Calculate gap
+                gap = gross_needed - best_gross if gross_needed > 0 else 0
+
+                # Get actual slippage used (from best cycle if available)
+                slippage_used = (
+                    self._last_scan_best.get(
+                        "slippage_used_pct", self.slippage_pct_estimate
+                    )
+                    if self._last_scan_best
+                    else self.slippage_pct_estimate
+                )
+
+                writer.writerow(
+                    [
+                        datetime.now().isoformat(),
+                        scan_num,
+                        f"{best_gross:.4f}",
+                        f"{best_net:.4f}",
+                        f"{gross_needed:.4f}",
+                        f"{gap:.4f}",
+                        self.slippage_mode,
+                        f"{slippage_used:.4f}",
+                        f"{self.taker_fee * 100:.4f}",
+                        f"{self.min_profit_threshold:.4f}",
+                        count_above,
+                    ]
+                )
+        except Exception as e:
+            logger.error(f"Scan summary CSV logging error: {e}")
 
     async def get_cash(self):
         """Get total cash (USD + USDT) balance for equity tracker"""
@@ -1543,6 +1831,25 @@ class RealTriangularArbitrage:
                 if self.verbosity == "debug" and self._last_scan_best:
                     self._log_scan_to_csv(trade_num, len(opportunities))
 
+                # Log scan summary CSV if enabled
+                if self.write_scan_csv and self._last_scan_best:
+                    # Use expected fee model
+                    maker_legs_fee = self.expected_maker_legs * self.maker_fee
+                    taker_legs_fee = (3 - self.expected_maker_legs) * self.taker_fee
+                    fee_cost_pct_calc = (maker_legs_fee + taker_legs_fee) * 100
+                    gross_needed_calc = (
+                        self.min_profit_threshold
+                        + fee_cost_pct_calc
+                        + self.slippage_pct_estimate
+                    )
+                    self._log_scan_summary_to_csv(
+                        trade_num,
+                        self._last_scan_best["gross_profit_pct"],
+                        self._last_scan_best["net_profit_pct"],
+                        gross_needed_calc,
+                        len(opportunities),
+                    )
+
                 # Dedupe logic: compute key and net for change detection
                 all_cycles = getattr(self, "_all_cycles", [])
                 best = all_cycles[0] if all_cycles else None
@@ -1588,6 +1895,27 @@ class RealTriangularArbitrage:
 
                 # Print output based on dedupe decision
                 if should_print():
+                    # Calculate breakeven gross ONCE at the top (used by banner and why line)
+                    try:
+                        # Use expected fee model
+                        maker_legs_fee = self.expected_maker_legs * self.maker_fee
+                        taker_legs_fee = (3 - self.expected_maker_legs) * self.taker_fee
+                        fee_cost_pct_calc = (maker_legs_fee + taker_legs_fee) * 100
+                        breakeven_gross = (
+                            self.min_profit_threshold
+                            + fee_cost_pct_calc
+                            + self.slippage_pct_estimate
+                        )
+                        # Sanity check: breakeven should be positive and reasonable (<100%)
+                        if 0 < breakeven_gross < 100:
+                            breakeven_str = f" (need gross≥{breakeven_gross:.2f}%)"
+                        else:
+                            breakeven_str = ""
+                            breakeven_gross = 0  # Fallback
+                    except Exception:
+                        breakeven_str = ""
+                        breakeven_gross = 0  # Fallback
+
                     # Calculate USD P&L and EV
                     best_pnl_usd = 0.0
                     if best is not None:
@@ -1620,26 +1948,54 @@ class RealTriangularArbitrage:
                         topn = min(self.topn, len(all_cycles))
                         for i, opp in enumerate(all_cycles[:topn], 1):
                             cycle_str = " -> ".join(opp["cycle"][:3])
+                            # Clamp values for display
+                            gross_display = self._clamp_for_display(
+                                opp["gross_profit_pct"]
+                            )
+                            net_display = self._clamp_for_display(opp["net_profit_pct"])
                             print(
                                 f"  {i}. {cycle_str}: "
-                                f"gross={opp['gross_profit_pct']:+.2f}% "
+                                f"gross={gross_display:+.2f}% "
                                 f"fees={opp['fee_cost_pct']:.2f}% "
-                                f"net={opp['net_profit_pct']:+.2f}%"
+                                f"net={net_display:+.2f}%"
                             )
 
                         # Show why line if 0 opportunities above threshold
                         if len(opportunities) == 0 and all_cycles:
-                            best_opp = all_cycles[0]
-                            shortfall = (
-                                self.min_profit_threshold - best_opp["net_profit_pct"]
-                            )
-                            print(
-                                f"  ✗ why: best_net={best_opp['net_profit_pct']:+.2f}% "
-                                f"(< thr by {shortfall:.2f}%), "
-                                f"gross={best_opp['gross_profit_pct']:+.2f}% – "
-                                f"fees={best_opp['fee_cost_pct']:.2f}% – "
-                                f"slip={best_opp['slippage_pct']:.2f}%"
-                            )
+                            try:
+                                best_opp = all_cycles[0]
+                                shortfall = (
+                                    self.min_profit_threshold
+                                    - best_opp["net_profit_pct"]
+                                )
+                                # Calculate gap to breakeven gross with safety check
+                                if breakeven_gross > 0:
+                                    gross_gap = (
+                                        breakeven_gross - best_opp["gross_profit_pct"]
+                                    )
+                                    gap_str = f"(need {gross_gap:+.2f}% more) – "
+                                else:
+                                    gap_str = ""
+
+                                # Clamp for display
+                                net_display = self._clamp_for_display(
+                                    best_opp["net_profit_pct"]
+                                )
+                                gross_display = self._clamp_for_display(
+                                    best_opp["gross_profit_pct"]
+                                )
+
+                                print(
+                                    f"  ✗ why: best_net={net_display:+.2f}% "
+                                    f"(< thr by {shortfall:.2f}%), "
+                                    f"gross={gross_display:+.2f}% "
+                                    f"{gap_str}"
+                                    f"fees={best_opp['fee_cost_pct']:.2f}% – "
+                                    f"slip={best_opp['slippage_pct']:.2f}%"
+                                )
+                            except Exception as e:
+                                logger.debug(f"Error formatting why line: {e}")
+                                print("  ✗ why: calculation error")
 
                             # Track reason buckets
                             if self.reason_buckets:
@@ -1672,18 +2028,22 @@ class RealTriangularArbitrage:
                                 os.makedirs("logs", exist_ok=True)
                                 self._log_near_miss_to_csv(trade_num, best_opp)
 
+                        # Show threshold with breakeven (already calculated above)
                         print(
-                            f"  → {len(opportunities)} above {self.min_profit_threshold}% threshold",
+                            f"  → {len(opportunities)} above {self.min_profit_threshold}% threshold{breakeven_str}",
                             end="",
                         )
 
-                        # Show EMA stats if available
+                        # Show EMA stats and scan metrics if available
                         if self.ema_gross is not None and self.verbosity in [
                             "normal",
                             "debug",
                         ]:
+                            # Calculate filtered triangle count
+                            total_cycles = len(all_cycles)
                             print(
-                                f" | EMA15 gross={self.ema_gross:.2f}% net={self.ema_net:.2f}%",
+                                f" | EMA15 g={self.ema_gross:.2f}% n={self.ema_net:.2f}% | "
+                                f"cycles={total_cycles}",
                                 end="",
                             )
 
