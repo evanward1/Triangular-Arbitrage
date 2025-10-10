@@ -86,10 +86,20 @@ def run_arbitrage():
         print("❌ Invalid choice. Please enter 1 or 2.")
         return
 
-    max_position = os.getenv("MAX_POSITION_SIZE", "100")
-    min_profit = os.getenv("MIN_PROFIT_THRESHOLD", "0.5")
+    max_position = float(os.getenv("MAX_POSITION_SIZE", "100"))
+    thr = max(0.0, float(os.getenv("MIN_PROFIT_THRESHOLD", "0.5")))
 
-    print(f"💰 Position: ${max_position} | Threshold: {min_profit}% NET")
+    # Calculate breakeven gross for display (assumes taker-only by default)
+    taker_fee = 0.001  # 0.10% typical
+    slippage_floor_bps = float(os.getenv("SLIPPAGE_FLOOR_BPS", "2"))
+    slip = slippage_floor_bps / 100.0
+    fee_cost = (3 * taker_fee) * 100  # Assume all taker
+    breakeven_gross = thr + fee_cost + slip
+
+    print(f"💰 Position: ${max_position:.0f} | Threshold: {thr:.2f}% NET")
+    print(
+        f"   (need gross≥{breakeven_gross:.2f}% = {thr:.2f}% threshold + {fee_cost:.2f}% fees + {slip:.2f}% slip)"
+    )
     print()
 
     # Run directly without subprocess
