@@ -816,7 +816,7 @@ class RealTriangularArbitrage:
                     filled_amount = current_amount
 
                 current_amount = float(filled_amount) - float(fee)
-                logger.info(
+                logger.debug(
                     f"    Filled: {filled_amount}, Fee: {fee}, Remaining: {current_amount}"
                 )
 
