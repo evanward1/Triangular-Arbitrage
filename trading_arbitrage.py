@@ -2438,6 +2438,43 @@ class RealTriangularArbitrage:
                     # Track attempt
                     self.execution_stats["attempts"] += 1
 
+                    # CRITICAL: Check per-leg slippage caps FIRST before any size gating
+                    # Use max position size for slippage estimation to check worst case
+                    logger.info("📖 Checking per-leg slippage caps...")
+                    (
+                        estimated_slippage,
+                        per_leg_details,
+                    ) = await self.estimate_cycle_slippage(
+                        cycle, self.max_position_size
+                    )
+
+                    # Check per-leg slippage caps
+                    max_slippage_leg_pct = self.max_slippage_leg_bps / 100.0
+                    leg_cap_exceeded = False
+                    for i, leg in enumerate(per_leg_details, 1):
+                        if leg["slippage_pct"] > max_slippage_leg_pct:
+                            logger.warning(
+                                f"   ⚠️ REJECT: Leg slippage {leg['slippage_pct']:.2f}% "
+                                f"> cap {max_slippage_leg_pct:.2f}% on LEG{i} "
+                                f"(pair={leg['symbol']}, side={leg['side']})"
+                            )
+                            self.execution_stats["slippage_rejects"] += 1
+                            leg_cap_exceeded = True
+                            break
+
+                    if leg_cap_exceeded:
+                        continue
+
+                    # Log per-leg slippage on success
+                    if per_leg_details:
+                        leg_slip_str = " ".join(
+                            f"LEG{i}={leg['slippage_pct']:.3f}%"
+                            for i, leg in enumerate(per_leg_details, 1)
+                        )
+                        logger.info(
+                            f"   ✅ Slip[{leg_slip_str}] (cap={max_slippage_leg_pct:.2f}%)"
+                        )
+
                     # Determine size after balance cap (the actual intended order size)
                     size_after_balance_cap = min(
                         self.max_position_size, available_balance
@@ -2476,40 +2513,13 @@ class RealTriangularArbitrage:
                     execution_size = depth_limited_size_usd
                     logger.info(f"   ✅ Depth-limited size: ${execution_size:.2f}")
 
-                    # Validate with REAL slippage from order book depth
-                    logger.info("📖 Checking real slippage from order book...")
-                    real_slippage, per_leg_details = await self.estimate_cycle_slippage(
-                        cycle, execution_size
-                    )
+                    # Re-validate slippage with actual execution size
+                    (
+                        real_slippage,
+                        real_per_leg_details,
+                    ) = await self.estimate_cycle_slippage(cycle, execution_size)
 
-                    # Check per-leg slippage caps
-                    max_slippage_leg_pct = self.max_slippage_leg_bps / 100.0
-                    leg_cap_exceeded = False
-                    for i, leg in enumerate(per_leg_details, 1):
-                        if leg["slippage_pct"] > max_slippage_leg_pct:
-                            logger.warning(
-                                f"   ⚠️ REJECT: Leg slippage {leg['slippage_pct']:.2f}% "
-                                f"> cap {max_slippage_leg_pct:.2f}% on LEG{i} "
-                                f"(pair={leg['symbol']}, side={leg['side']})"
-                            )
-                            self.execution_stats["slippage_rejects"] += 1
-                            leg_cap_exceeded = True
-                            break
-
-                    if leg_cap_exceeded:
-                        continue
-
-                    # Log per-leg slippage on success (verbose mode)
-                    if per_leg_details:
-                        leg_slip_str = " ".join(
-                            f"LEG{i}={leg['slippage_pct']:.3f}%"
-                            for i, leg in enumerate(per_leg_details, 1)
-                        )
-                        logger.info(
-                            f"   Slip[{leg_slip_str}] (cap={max_slippage_leg_pct:.2f}%)"
-                        )
-
-                    # Recalculate net profit with real slippage
+                    # Recalculate net profit with real slippage at execution size
                     real_net_profit = gross_profit - fee_cost_pct - real_slippage
                     logger.info(
                         f"   Real slippage: {real_slippage:.3f}% → net profit: {real_net_profit:.3f}%"
