@@ -10,6 +10,7 @@ import os
 import platform
 import random
 import time
+from collections import defaultdict, deque
 from typing import Dict, List, Optional
 
 import ccxt
@@ -29,6 +30,91 @@ logger = logging.getLogger(__name__)
 # Windows compatibility
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+
+class SlippageMonitor:
+    """
+    Monitors per-symbol slippage over a rolling window to detect chronic offenders.
+    Tracks median slippage and identifies pairs that consistently exceed caps.
+    """
+
+    def __init__(self, window: int = 20):
+        """
+        Initialize slippage monitor.
+
+        Args:
+            window: Number of samples to track per symbol (default 20)
+        """
+        self.window = window
+        self.data: Dict[str, deque] = defaultdict(lambda: deque(maxlen=window))
+
+    def record(self, symbol: str, slippage_pct: float):
+        """
+        Record a slippage observation for a symbol.
+
+        Args:
+            symbol: Trading pair symbol (e.g., "BONK/USD")
+            slippage_pct: Observed slippage percentage (e.g., 1.23 for 1.23%)
+        """
+        self.data[symbol].append(slippage_pct)
+
+    def median(self, symbol: str) -> float:
+        """
+        Calculate median slippage for a symbol.
+
+        Args:
+            symbol: Trading pair symbol
+
+        Returns:
+            Median slippage percentage, or 0.0 if no data
+        """
+        if symbol not in self.data or not self.data[symbol]:
+            return 0.0
+
+        sorted_data = sorted(self.data[symbol])
+        n = len(sorted_data)
+        if n % 2 == 1:
+            return sorted_data[n // 2]
+        else:
+            return 0.5 * (sorted_data[n // 2 - 1] + sorted_data[n // 2])
+
+    def is_chronic(self, symbol: str, cap: float) -> bool:
+        """
+        Check if a symbol is a chronic slippage offender.
+
+        Args:
+            symbol: Trading pair symbol
+            cap: Slippage cap percentage to compare against
+
+        Returns:
+            True if median slippage exceeds cap, False otherwise
+        """
+        # Need at least half the window filled to make a determination
+        if symbol not in self.data or len(self.data[symbol]) < self.window // 2:
+            return False
+
+        return self.median(symbol) > cap
+
+    def get_stats(self, symbol: str) -> Dict[str, float]:
+        """
+        Get statistics for a symbol.
+
+        Args:
+            symbol: Trading pair symbol
+
+        Returns:
+            Dictionary with 'median', 'count', 'min', 'max' keys
+        """
+        if symbol not in self.data or not self.data[symbol]:
+            return {"median": 0.0, "count": 0, "min": 0.0, "max": 0.0}
+
+        data_list = list(self.data[symbol])
+        return {
+            "median": self.median(symbol),
+            "count": len(data_list),
+            "min": min(data_list),
+            "max": max(data_list),
+        }
 
 
 class RealTriangularArbitrage:
@@ -151,10 +237,23 @@ class RealTriangularArbitrage:
         # Initialize EquityTracker
         self.equity_tracker = EquityTracker(out_dir="logs")
 
+        # Initialize SlippageMonitor for chronic offender detection
+        slippage_monitor_window = int(os.getenv("SLIPPAGE_MONITOR_WINDOW", "20"))
+        self.slippage_monitor = SlippageMonitor(window=slippage_monitor_window)
+
         # Near-miss detection
         self.near_miss_bps = (
             float(os.getenv("NEAR_MISS_BPS", "5")) / 100
         )  # Convert to percent
+
+        # Test execution mode (paper only) - force small fills on near-miss opportunities
+        self.test_execute_near_miss = (
+            os.getenv("TEST_EXECUTE_NEAR_MISS", "false").lower() == "true"
+        )
+        self.test_near_miss_gap_bps = (
+            float(os.getenv("TEST_NEAR_MISS_GAP_BPS", "8")) / 100.0
+        )
+        self.test_near_miss_size_usd = float(os.getenv("TEST_NEAR_MISS_SIZE_USD", "15"))
 
         # CSV logging
         self.write_scan_csv = os.getenv("WRITE_SCAN_CSV", "false").lower() == "true"
@@ -187,6 +286,33 @@ class RealTriangularArbitrage:
         self.exclude_symbols = [
             s.strip().upper() for s in self.exclude_symbols if s.strip()
         ]
+
+        # Regex-based symbol exclusion for more flexible filtering
+        import re
+
+        self.exclude_symbols_regex = os.getenv("EXCLUDE_SYMBOLS_REGEX", "")
+        self.exclude_symbols_pattern = (
+            re.compile(self.exclude_symbols_regex)
+            if self.exclude_symbols_regex
+            else None
+        )
+
+        # Per-symbol slippage caps (format: "BONK/USD:0.20,PEPE/USD:0.25")
+        self.per_symbol_slippage_caps = {}
+        per_symbol_caps_env = os.getenv("PER_SYMBOL_SLIPPAGE_CAPS", "")
+        if per_symbol_caps_env:
+            for item in per_symbol_caps_env.split(","):
+                item = item.strip()
+                if ":" in item:
+                    symbol, cap_str = item.split(":", 1)
+                    try:
+                        self.per_symbol_slippage_caps[symbol.strip()] = (
+                            float(cap_str) / 100.0
+                        )
+                    except ValueError:
+                        logger.warning(
+                            f"Invalid per-symbol slippage cap format: {item}"
+                        )
 
         # Stablecoin filtering
         self.exclude_stablecoin_only = (
@@ -500,31 +626,21 @@ class RealTriangularArbitrage:
         try:
             if self.trading_mode == "paper":
                 # Simulate trade execution with REAL bid/ask prices
+                # Note: Still crosses spread (no queue simulation), but respects maker vs taker fees
                 if symbol in self.tickers:
                     ticker = self.tickers[symbol]
-                    if order_type == "maker":
-                        # Maker uses best bid/ask as limit price
-                        if side == "buy":
-                            execution_price = ticker.get("ask", 1.0)
-                            filled_amount = (
-                                amount / execution_price if execution_price else amount
-                            )
-                            fee_rate = self.maker_fee
-                        else:
-                            execution_price = ticker.get("bid", 1.0)
-                            filled_amount = amount * execution_price
-                            fee_rate = self.maker_fee
-                    else:  # taker
-                        if side == "buy":
-                            execution_price = ticker.get("ask", 1.0)
-                            filled_amount = (
-                                amount / execution_price if execution_price else amount
-                            )
-                            fee_rate = self.taker_fee
-                        else:
-                            execution_price = ticker.get("bid", 1.0)
-                            filled_amount = amount * execution_price
-                            fee_rate = self.taker_fee
+                    if side == "buy":
+                        execution_price = ticker.get("ask", 1.0)
+                        filled_amount = (
+                            amount / execution_price if execution_price else amount
+                        )
+                    else:
+                        execution_price = ticker.get("bid", 1.0)
+                        filled_amount = amount * execution_price
+                    # Use appropriate fee rate based on order type
+                    fee_rate = (
+                        self.maker_fee if order_type == "maker" else self.taker_fee
+                    )
                 else:
                     execution_price = 1.0
                     filled_amount = amount
@@ -926,7 +1042,13 @@ class RealTriangularArbitrage:
     async def check_order_book_depth(
         self, symbol: str, side: str, amount: float
     ) -> Dict:
-        """Check if there's enough liquidity in the order book for the trade"""
+        """Check if there's enough liquidity in the order book for the trade
+
+        Args:
+            symbol: Trading pair (e.g., "BTC/USD")
+            side: "buy" or "sell"
+            amount: Amount in FROM currency (quote for buy, base for sell)
+        """
         try:
             order_book = self.exchange.fetch_order_book(symbol, limit=self.depth_levels)
 
@@ -938,40 +1060,46 @@ class RealTriangularArbitrage:
                 return {"sufficient": False, "error": "Empty order book"}
 
             # Get best price (top of book)
-            best_price = orders[0][0]
+            best_price = float(orders[0][0])
 
-            cumulative_amount = 0.0
-            weighted_price = 0.0
+            # Convert amount to base units for proper comparison with order book volumes
+            # amount is in FROM-currency units.
+            # If BUY (to_currency/from_currency), we need BASE units = quote_amount / best_ask
+            # If SELL (from_currency/to_currency), amount is already in BASE units
+            target_base = (amount / best_price) if side == "buy" else amount
+
+            cumulative_base = 0.0
+            vwap_num = 0.0  # sum(price * base_taken)
 
             for order_entry in orders:
-                # Order book entries can be [price, volume] or [price, volume, timestamp]
-                price = order_entry[0]
-                volume = order_entry[1]
+                # Order book entries are [price, volume] where volume is in BASE units
+                price = float(order_entry[0])
+                volume = float(order_entry[1])  # BASE units
 
-                if cumulative_amount >= amount:
+                if cumulative_base >= target_base:
                     break
-                take_amount = min(amount - cumulative_amount, volume)
-                weighted_price += price * take_amount
-                cumulative_amount += take_amount
+                take_base = min(target_base - cumulative_base, volume)
+                vwap_num += price * take_base
+                cumulative_base += take_base
 
-            if cumulative_amount < amount:
+            if cumulative_base < target_base:
                 return {
                     "sufficient": False,
-                    "available": cumulative_amount,
-                    "needed": amount,
+                    "available": cumulative_base,
+                    "needed": target_base,
                     "avg_price": None,
                     "best_price": best_price,
                     "slippage_pct": None,
                 }
 
-            avg_price = weighted_price / amount
+            avg_price = vwap_num / target_base
             # Slippage = (avg_execution_price - best_price) / best_price
             slippage_pct = abs((avg_price - best_price) / best_price) * 100
 
             return {
                 "sufficient": True,
-                "available": cumulative_amount,
-                "needed": amount,
+                "available": cumulative_base,
+                "needed": target_base,
                 "avg_price": avg_price,
                 "best_price": best_price,
                 "slippage_pct": slippage_pct,
@@ -1189,6 +1317,13 @@ class RealTriangularArbitrage:
                 # Apply exclusions
                 if base in self.exclude_symbols or quote in self.exclude_symbols:
                     continue
+
+                # Apply regex-based exclusions
+                if self.exclude_symbols_pattern:
+                    if self.exclude_symbols_pattern.search(
+                        base
+                    ) or self.exclude_symbols_pattern.search(quote):
+                        continue
 
                 filtered_symbols.add(base)
                 filtered_symbols.add(quote)
@@ -1818,6 +1953,11 @@ class RealTriangularArbitrage:
                     continue
             if base in self.exclude_symbols or quote in self.exclude_symbols:
                 continue
+            if self.exclude_symbols_pattern:
+                if self.exclude_symbols_pattern.search(
+                    base
+                ) or self.exclude_symbols_pattern.search(quote):
+                    continue
             filtered_count += 1
 
         # Count potential triangles (filtered symbols)
@@ -1836,6 +1976,11 @@ class RealTriangularArbitrage:
                     continue
             if base in self.exclude_symbols or quote in self.exclude_symbols:
                 continue
+            if self.exclude_symbols_pattern:
+                if self.exclude_symbols_pattern.search(
+                    base
+                ) or self.exclude_symbols_pattern.search(quote):
+                    continue
             filtered_symbols_set.add(base)
             filtered_symbols_set.add(quote)
 
@@ -2430,8 +2575,14 @@ class RealTriangularArbitrage:
                                 f"slippage: {slippage:.3f}%)"
                             )
 
-                        # Update amount for next step (rough estimate)
-                        amount = amount * depth.get("avg_price", 1.0) * 0.999
+                        # Update amount for next step - convert units correctly
+                        if side == "sell":
+                            # Selling BASE → receive QUOTE
+                            amount = amount * depth.get("avg_price", 1.0)
+                        else:
+                            # Buying BASE with QUOTE
+                            amount = amount / depth.get("avg_price", 1.0)
+                        amount *= 0.999  # Small buffer for fees/precision
 
                     if not depth_check_passed:
                         logger.debug(
@@ -2452,10 +2603,34 @@ class RealTriangularArbitrage:
                         cycle, self.max_position_size
                     )
 
-                    # Check per-leg slippage caps
-                    max_slippage_leg_pct = self.max_slippage_leg_bps / 100.0
+                    # Check per-leg slippage caps (use per-symbol caps if available)
                     leg_cap_exceeded = False
+                    chronic_offender = False
                     for i, leg in enumerate(per_leg_details, 1):
+                        symbol = leg["symbol"]
+                        # Use per-symbol cap if available, otherwise use global default
+                        max_slippage_leg_pct = self.per_symbol_slippage_caps.get(
+                            symbol, self.max_slippage_leg_bps / 100.0
+                        )
+
+                        # Record slippage observation for chronic offender detection
+                        self.slippage_monitor.record(symbol, leg["slippage_pct"])
+
+                        # Check if this symbol is a chronic offender
+                        if self.slippage_monitor.is_chronic(
+                            symbol, max_slippage_leg_pct
+                        ):
+                            stats = self.slippage_monitor.get_stats(symbol)
+                            logger.warning(
+                                f"   ⚠️ REJECT: Chronic slippage offender on LEG{i} "
+                                f"(pair={symbol}, median={stats['median']:.2f}%, "
+                                f"cap={max_slippage_leg_pct:.2f}%, samples={stats['count']})"
+                            )
+                            self.execution_stats["slippage_rejects"] += 1
+                            chronic_offender = True
+                            break
+
+                        # Check immediate slippage cap
                         if leg["slippage_pct"] > max_slippage_leg_pct:
                             logger.warning(
                                 f"   ⚠️ REJECT: Leg slippage {leg['slippage_pct']:.2f}% "
@@ -2466,7 +2641,7 @@ class RealTriangularArbitrage:
                             leg_cap_exceeded = True
                             break
 
-                    if leg_cap_exceeded:
+                    if leg_cap_exceeded or chronic_offender:
                         continue
 
                     # Log per-leg slippage on success
@@ -2536,11 +2711,29 @@ class RealTriangularArbitrage:
                     # Guardrail: Never execute negative net regardless of config
                     effective_threshold = max(0.0, self.min_profit_threshold)
                     if real_net_profit < effective_threshold:
-                        logger.warning(
-                            f"   ⚠️ REJECT: Real net profit {real_net_profit:.3f}% below threshold"
+                        # Check if we can do a test execution (paper mode only)
+                        can_test = (
+                            self.trading_mode == "paper"
+                            and self.test_execute_near_miss
+                            and (effective_threshold - real_net_profit)
+                            <= self.test_near_miss_gap_bps
                         )
-                        self.execution_stats["slippage_rejects"] += 1
-                        continue
+                        if not can_test:
+                            logger.warning(
+                                f"   ⚠️ REJECT: Real net profit {real_net_profit:.3f}% below threshold"
+                            )
+                            self.execution_stats["slippage_rejects"] += 1
+                            continue
+                        else:
+                            # Test execution: cap size to small amount
+                            execution_size = min(
+                                execution_size, self.test_near_miss_size_usd
+                            )
+                            logger.info(
+                                f"   ✳️  TEST EXECUTION: forcing small fill size=${execution_size:.2f} "
+                                f"(gap {effective_threshold - real_net_profit:.3f}%) to validate pipeline"
+                            )
+                            # Continue to execution with capped size
 
                     # Execute with depth-limited size
                     result = await self.execute_arbitrage_cycle(cycle, execution_size)
