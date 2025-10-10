@@ -11,6 +11,7 @@ This system continuously monitors cryptocurrency markets to find triangular arbi
 - **⚡ Real-Time Detection**: Continuously scans markets for profitable arbitrage cycles
 - **🔄 Multi-Exchange Support**: Works with Binance, Kraken, KuCoin, and Coinbase
 - **🔗 DEX Support**: NEW! DEX/MEV arbitrage on Ethereum with Uniswap V3
+- **🤖 Machine Learning**: GNN-based cycle scoring learns from historical trade performance
 - **📊 Live Market Data**: Uses real-time order book data with configurable depth levels
 - **💰 Dual Trading Modes**: Paper trading (simulation) and live trading (real money)
 - **🛡️ Risk Management**: Configurable position limits, profit thresholds, and execution controls
@@ -254,6 +255,7 @@ Near misses:
 
 - **Equity Tracking**: `logs/equity_timeseries.csv` - Time series of portfolio equity
 - **Trade History**: `logs/trades_*.csv` - Detailed trade execution records
+- **GNN State**: `logs/gnn_state.json` - Machine learning model state (edge weights, success rates)
 - **Database**: `trade_state.db` - SQLite database for cycle state management
 
 ## Architecture
@@ -276,6 +278,7 @@ triangular_arbitrage/           # Supporting modules
 ├── execution_engine.py         # Strategy execution engine
 ├── detector.py                 # Opportunity detection
 ├── risk_controls.py           # Risk management
+├── gnn_optimizer.py           # GNN-based cycle scoring
 └── metrics.py                 # Performance metrics
 ```
 
@@ -296,6 +299,14 @@ triangular_arbitrage/           # Supporting modules
 - Tracks realized and unrealized P&L
 - Maintains time series in CSV format
 
+**GNN Cycle Scoring (Machine Learning)**
+- Graph Neural Network learns from historical trade outcomes
+- Tracks success rates for each trading edge (e.g., BTC→ETH)
+- Scores cycles based on past profitability and execution success
+- Automatically rejects cycles with poor historical performance (score < 1.0)
+- Updates predictions using gradient descent on profit errors
+- Persists learned state across sessions in `logs/gnn_state.json`
+
 ## Safety and Risk Management
 
 ### Built-in Protections
@@ -305,6 +316,7 @@ triangular_arbitrage/           # Supporting modules
 - **Latency Checks**: Reject stale data or slow execution
 - **Depth Validation**: Ensure sufficient liquidity before execution
 - **Slippage Estimation**: Account for market impact
+- **GNN Cycle Filtering**: Automatically blocks cycles with poor historical performance
 - **Paper Trading**: Test strategies without risk
 
 ### Live Trading Safety
@@ -330,6 +342,76 @@ MAX_POSITION_SIZE=10 MIN_PROFIT_THRESHOLD=1.0 python run_clean.py 1
 
 # Run for short duration to verify configuration
 RUN_MIN=1 python run_clean.py 1
+```
+
+## Machine Learning: GNN Cycle Optimizer
+
+The system includes a Graph Neural Network (GNN) optimizer that learns from trade execution history to improve cycle selection.
+
+### How It Works
+
+The GNN optimizer:
+1. **Learns from Every Trade**: Records expected vs. actual profit for each executed cycle
+2. **Tracks Edge Performance**: Maintains success rates for each trading pair edge (e.g., BTC→ETH success rate)
+3. **Scores Cycles**: Assigns a score to each potential cycle based on historical performance
+4. **Filters Bad Cycles**: Automatically rejects cycles with score < 1.0 before execution
+5. **Adapts Over Time**: Uses gradient descent to update predictions based on profit errors
+
+### Configuration
+
+The GNN optimizer is **enabled by default** and requires no configuration. To disable it, modify your strategy config:
+
+```yaml
+# In your strategy configuration
+enable_gnn_optimizer: false  # Disable GNN scoring
+```
+
+### Data Persistence
+
+GNN state is stored in `logs/gnn_state.json` and includes:
+- Edge weights for each currency pair transition
+- Success rate per edge
+- Historical profit predictions per cycle
+- Node features (trade counts, average profits)
+
+### Example GNN Behavior
+
+```python
+# First trades (no history)
+USDT→BTC→ETH→USDT: score = 1.0 (neutral, will execute)
+
+# After 3 successful trades (+1.5% profit each)
+USDT→BTC→ETH→USDT: score = 1.12 (good history, will execute)
+
+# After 3 failed trades (-0.5% loss each)
+USDT→DOGE→SHIB→USDT: score = 0.45 (poor history, REJECTED)
+```
+
+### Monitoring GNN Performance
+
+```bash
+# Run test to verify GNN is working
+python tests/integration/test_gnn_scoring.py
+
+# Expected output:
+# GNN TEST: PASS
+```
+
+### Failure Analysis
+
+The system also tracks cycle failure patterns:
+
+```python
+from triangular_arbitrage.execution_engine import StateManager
+
+# Analyze recent failures
+state_manager = StateManager()
+failures = await state_manager.analyze_failures()
+# Returns: {"GNN score too low": 12, "Insufficient depth": 8, ...}
+
+# Get failure trends over time
+trends = await state_manager.get_failure_trends()
+# Returns: {"2025-10-10": {"GNN score too low": 5}, ...}
 ```
 
 ## Advanced Usage
@@ -415,9 +497,15 @@ Triangular-Arbitrage/
 │   ├── execution_engine.py    # Strategy execution
 │   ├── detector.py            # Opportunity detection
 │   ├── risk_controls.py       # Risk management
+│   ├── gnn_optimizer.py       # GNN cycle scoring (ML)
 │   └── metrics.py             # Performance tracking
 ├── logs/                      # Output logs and data
+│   ├── equity_timeseries.csv  # Portfolio tracking
+│   ├── gnn_state.json         # GNN model state
+│   └── trades_*.csv           # Trade history
 ├── tests/                     # Test suite
+│   └── integration/
+│       └── test_gnn_scoring.py  # GNN integration test
 └── .env                       # Configuration (not in repo)
 ```
 
@@ -433,6 +521,9 @@ pytest --cov=triangular_arbitrage
 # Run specific tests
 pytest tests/unit/
 pytest tests/integration/
+
+# Test GNN optimizer
+python tests/integration/test_gnn_scoring.py
 ```
 
 ### Contributing
