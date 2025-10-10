@@ -998,6 +998,41 @@ class StateManager:
 
             await conn.commit()
 
+    async def analyze_failures(self):
+        async with self.get_connection() as conn:
+            query = (
+                "SELECT error_message FROM cycles WHERE state = ? "
+                "AND error_message IS NOT NULL ORDER BY end_time DESC LIMIT 50"
+            )
+            cursor = await conn.execute(query, (CycleState.FAILED.value,))
+            rows = await cursor.fetchall()
+            failure_counts = {}
+            for row in rows:
+                reason = row[0]
+                failure_counts[reason] = failure_counts.get(reason, 0) + 1
+            return failure_counts
+
+    async def get_failure_trends(self):
+        async with self.get_connection() as conn:
+            cutoff_time = time.time() - (7 * 24 * 3600)
+            query = (
+                "SELECT date(end_time, 'unixepoch') as day, error_message, COUNT(*) as count "
+                "FROM cycles WHERE state = ? AND end_time >= ? AND error_message IS NOT NULL "
+                "GROUP BY day, error_message ORDER BY day DESC"
+            )
+            cursor = await conn.execute(query, (CycleState.FAILED.value, cutoff_time))
+            rows = await cursor.fetchall()
+            trends = {}
+            for row in rows:
+                day = row[0]
+                error_msg = row[1]
+                count = row[2]
+                if day not in trends:
+                    trends[day] = {}
+                trends[day][error_msg] = count
+            logger.debug(f"Retrieved failure trends for {len(trends)} days")
+            return trends
+
     async def reserve_cycle_slot(
         self, strategy_name: str, max_open_cycles: int, reservation_ttl: int = 60
     ) -> Optional[str]:
@@ -1214,6 +1249,8 @@ class ConfigurationManager:
         config.setdefault("risk_controls", config.get("risk_controls", {})).setdefault(
             "enable_slippage_checks", True
         )
+
+        config.setdefault("enable_gnn_optimizer", True)
 
         self.strategies[config["name"]] = config
         return config
@@ -1729,6 +1766,8 @@ class StrategyExecutionEngine:
         # Capital allocation
         self.capital_config = strategy_config.get("capital_allocation", {})
 
+        self.enable_gnn_optimizer = strategy_config.get("enable_gnn_optimizer", True)
+
     async def initialize(self):
         """Initialize async components like the enhanced recovery manager"""
         if self._using_enhanced_recovery and hasattr(
@@ -1808,7 +1847,23 @@ class StrategyExecutionEngine:
             )
 
         try:
-            # Check other risk controls (consecutive losses)
+            if self.enable_gnn_optimizer:
+                from .gnn_optimizer import GNNArbitrageOptimizer
+
+                gnn = GNNArbitrageOptimizer()
+                gnn_score = gnn.get_cycle_score(cycle)
+                if gnn_score < 1.0:
+                    cycle_info.state = CycleState.FAILED
+                    cycle_info.error_message = "GNN score too low"
+                    cycle_info.end_time = time.time()
+                    if reservation_id:
+                        await self.state_manager.release_reservation(reservation_id)
+                    await self.state_manager.save_cycle(cycle_info)
+                    logger.error(
+                        f"Cycle {cycle_id} rejected: GNN score {gnn_score:.4f} < 1.0"
+                    )
+                    return cycle_info
+
             if not await self._check_risk_controls(skip_cycle_count=True):
                 cycle_info.state = CycleState.FAILED
                 cycle_info.error_message = "Risk controls violated"
@@ -1848,7 +1903,10 @@ class StrategyExecutionEngine:
                 else:
                     # Cycle didn't complete properly - major error
                     cycle_info.state = CycleState.FAILED
-                    cycle_info.error_message = f"Cycle ended in {cycle_info.current_currency} instead of {cycle_info.cycle[0]}"
+                    cycle_info.error_message = (
+                        f"Cycle ended in {cycle_info.current_currency} "
+                        f"instead of {cycle_info.cycle[0]}"
+                    )
                     logger.error(cycle_info.error_message)
                     return cycle_info
 
@@ -2171,7 +2229,8 @@ class StrategyExecutionEngine:
                                 return False
 
                             logger.warning(
-                                f"Proceeding with partial fill: {cycle_info.current_amount} {cycle_info.current_currency}"
+                                f"Proceeding with partial fill: "
+                                f"{cycle_info.current_amount} {cycle_info.current_currency}"
                             )
                         else:
                             cycle_info.error_message = "Order not fully filled"
@@ -2236,7 +2295,34 @@ class StrategyExecutionEngine:
             except Exception as e:
                 logger.error(f"Trade execution failed: {e}")
                 cycle_info.error_message = str(e)
+                if self.enable_gnn_optimizer:
+                    from .gnn_optimizer import GNNArbitrageOptimizer
+
+                    gnn = GNNArbitrageOptimizer()
+                    expected_profit = (
+                        cycle_info.profit_loss if cycle_info.profit_loss else 0.0
+                    )
+                    actual_profit = (
+                        cycle_info.current_amount - cycle_info.initial_amount
+                    )
+                    execution_time = time.time() - cycle_info.start_time
+                    gnn.add_trade_result(
+                        cycle_info.cycle, expected_profit, actual_profit, execution_time
+                    )
+                    gnn.save_state()
                 return False
+
+        if self.enable_gnn_optimizer:
+            from .gnn_optimizer import GNNArbitrageOptimizer
+
+            gnn = GNNArbitrageOptimizer()
+            expected_profit = cycle_info.profit_loss if cycle_info.profit_loss else 0.0
+            actual_profit = cycle_info.current_amount - cycle_info.initial_amount
+            execution_time = time.time() - cycle_info.start_time
+            gnn.add_trade_result(
+                cycle_info.cycle, expected_profit, actual_profit, execution_time
+            )
+            gnn.save_state()
 
         return True
 
