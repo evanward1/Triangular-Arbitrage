@@ -606,10 +606,67 @@ Notional Amount: 1000.0 USDC
 ✅ Good opportunity
 ```
 
+## Documentation
+
+This project includes comprehensive documentation to help you get started and make the most of the system.
+
+### 📚 Available Guides
+
+| Document | Description |
+|----------|-------------|
+| **[README.md](README.md)** | Main documentation covering installation, configuration, and usage |
+| **[TRADING_SETUP.md](TRADING_SETUP.md)** | Step-by-step guide for setting up live trading with API keys and safety configurations |
+| **[WEB_DASHBOARD_README.md](WEB_DASHBOARD_README.md)** | Web interface setup and deployment guide (FastAPI + React) |
+| **[DASHBOARD_FEATURES.md](DASHBOARD_FEATURES.md)** | Detailed web dashboard features, usage instructions, and API endpoints |
+| **[CHANGELOG.md](CHANGELOG.md)** | Version history and release notes |
+| **[CHANGELOG_v1.3.0.md](CHANGELOG_v1.3.0.md)** | Detailed changes for v1.3.0 (performance optimizations) |
+| **[PR_TEMPLATE.md](PR_TEMPLATE.md)** | Pull request template for contributors |
+| **[PR_READY_CHECKLIST.md](PR_READY_CHECKLIST.md)** | Pre-submission checklist for pull requests |
+
+### 🎯 Quick Navigation
+
+**Getting Started**
+- New to the project? Start with [README.md](README.md) Quick Start section
+- Want to trade with real money? See [TRADING_SETUP.md](TRADING_SETUP.md)
+- Prefer a visual interface? Check [WEB_DASHBOARD_README.md](WEB_DASHBOARD_README.md)
+
+**Configuration & Usage**
+- Configuration options: See "Configuration" section in [README.md](README.md)
+- Live trading safety: [TRADING_SETUP.md](TRADING_SETUP.md) Section 2 & 8
+- Web dashboard controls: [DASHBOARD_FEATURES.md](DASHBOARD_FEATURES.md)
+
+**Advanced Topics**
+- GNN Machine Learning: [README.md](README.md) "Machine Learning: GNN Cycle Optimizer" section
+- DEX/MEV Arbitrage: [README.md](README.md) "DEX/MEV Arbitrage" section
+- Performance optimizations: [CHANGELOG_v1.3.0.md](CHANGELOG_v1.3.0.md)
+
+**Development**
+- Project structure: [README.md](README.md) "Development" section
+- Version history: [CHANGELOG.md](CHANGELOG.md)
+- Contributing: [PR_TEMPLATE.md](PR_TEMPLATE.md)
+
+### 🛠️ Additional Resources
+
+**Training Tools**
+```bash
+# GNN training and monitoring helper script
+./train_gnn.sh
+```
+
+**Configuration Examples**
+- `.env.example` - Environment variable template
+- `configs/dex_mev.example.yaml` - DEX arbitrage configuration
+- `configs/strategies/` - Strategy configuration examples
+
+**Logs and Data**
+- `logs/equity_timeseries.csv` - Portfolio value over time
+- `logs/gnn_state.json` - Machine learning model state
+- `logs/trades_*.csv` - Trade execution history
+
 ## Support
 
 For issues, questions, or contributions:
-- Review this documentation
-- Check the troubleshooting section
+- Review the [documentation guides](#documentation) above
+- Check the [troubleshooting section](#troubleshooting)
 - Review code comments and docstrings
 - Test in paper mode to understand behavior
