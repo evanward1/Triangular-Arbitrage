@@ -23,7 +23,13 @@ class ArbitrageOpportunity:
     gross_bps: float  # Gross profit in basis points
     net_bps: float  # Net profit after gas/slippage in basis points
     gas_cost_wei: int  # Estimated gas cost
+    gas_cost_usd: Decimal  # Gas cost in USD
     notional_amount: Decimal  # Base amount used for calculation
+    per_leg_slippage_bps: List[float]  # Slippage per leg in bps
+    total_slippage_bps: float  # Total slippage across all legs
+    slippage_cost_usd: Decimal  # Slippage cost in USD
+    breakeven_before_gas: Decimal  # Profit before gas costs
+    breakeven_after_gas: Decimal  # Profit after all costs
 
 
 class ArbitrageSolver:
@@ -34,6 +40,9 @@ class ArbitrageSolver:
         self.config = config
         self.dex_client = dex_client
         self.gas_cost_constant_wei = 200000 * 20 * 10**9  # ~200k gas at 20 gwei
+
+        # ETH price for gas cost estimation (would come from oracle in production)
+        self.eth_price_usd = Decimal("2000.0")
 
     def find_arbitrage_opportunities(
         self, notional_amount: Decimal = None
@@ -59,10 +68,47 @@ class ArbitrageSolver:
         opportunities.sort(key=lambda x: x.net_bps, reverse=True)
         return opportunities
 
+    def _calculate_per_leg_slippage(
+        self, amount_in: Decimal, amount_out: Decimal, price_impact_bps: float = 0
+    ) -> float:
+        """
+        Calculate slippage for a single leg.
+
+        Args:
+            amount_in: Input amount
+            amount_out: Output amount
+            price_impact_bps: Additional price impact in bps
+
+        Returns:
+            Slippage in basis points
+        """
+        # Slippage is the deviation from perfect execution
+        # For simplicity, use a conservative estimate based on trade size
+        # In production, would calculate based on reserves and liquidity depth
+        base_slippage_bps = 5.0  # Base 5 bps slippage
+        slippage_bps = base_slippage_bps + price_impact_bps
+        return slippage_bps
+
+    def _estimate_gas_cost_usd(self, gas_limit: int, gas_price_gwei: int) -> Decimal:
+        """
+        Estimate gas cost in USD.
+
+        Args:
+            gas_limit: Gas limit for transaction
+            gas_price_gwei: Gas price in gwei
+
+        Returns:
+            Gas cost in USD
+        """
+        gas_cost_wei = gas_limit * gas_price_gwei * 10**9
+        gas_cost_eth = Decimal(gas_cost_wei) / Decimal(10**18)
+        gas_cost_usd = gas_cost_eth * self.eth_price_usd
+        return gas_cost_usd
+
     def _evaluate_route(
         self, route: RouteConfig, notional_amount: Decimal
     ) -> ArbitrageOpportunity:
-        """Evaluate a specific arbitrage route."""
+        """Evaluate a specific arbitrage route with detailed slippage and breakeven analysis."""
         logger.debug(
             f"Evaluating route: {route.base} -> {route.mid} -> {route.alt} -> {route.base}"
         )
@@ -75,6 +121,16 @@ class ArbitrageSolver:
                 notional_amount,
                 route.pool_addresses[0] if route.pool_addresses else "",
             )
+            leg1_slippage = self._calculate_per_leg_slippage(
+                notional_amount, amount_mid
+            )
+
+            # Check per-leg slippage cap
+            if leg1_slippage > self.config.per_leg_slippage_bps:
+                logger.debug(
+                    f"Leg 1 slippage {leg1_slippage:.2f} bps exceeds cap {self.config.per_leg_slippage_bps} bps"
+                )
+                return None
 
             # Step 2: mid -> alt
             amount_alt = self.dex_client.estimate_swap_output(
@@ -83,6 +139,14 @@ class ArbitrageSolver:
                 amount_mid,
                 route.pool_addresses[1] if len(route.pool_addresses) > 1 else "",
             )
+            leg2_slippage = self._calculate_per_leg_slippage(amount_mid, amount_alt)
+
+            if leg2_slippage > self.config.per_leg_slippage_bps:
+                logger.debug(
+                    f"Leg 2 slippage {leg2_slippage:.2f} bps exceeds cap "
+                    f"{self.config.per_leg_slippage_bps} bps"
+                )
+                return None
 
             # Step 3: alt -> base
             amount_base_final = self.dex_client.estimate_swap_output(
@@ -91,24 +155,71 @@ class ArbitrageSolver:
                 amount_alt,
                 route.pool_addresses[2] if len(route.pool_addresses) > 2 else "",
             )
+            leg3_slippage = self._calculate_per_leg_slippage(
+                amount_alt, amount_base_final
+            )
 
-            # Calculate profit
+            if leg3_slippage > self.config.per_leg_slippage_bps:
+                logger.debug(
+                    f"Leg 3 slippage {leg3_slippage:.2f} bps exceeds cap {self.config.per_leg_slippage_bps} bps"
+                )
+                return None
+
+            # Calculate total slippage
+            per_leg_slippage_bps = [leg1_slippage, leg2_slippage, leg3_slippage]
+            total_slippage_bps = sum(per_leg_slippage_bps)
+
+            # Check cycle-wide slippage cap
+            if total_slippage_bps > self.config.cycle_slippage_bps:
+                logger.debug(
+                    f"Total slippage {total_slippage_bps:.2f} bps exceeds cycle cap "
+                    f"{self.config.cycle_slippage_bps} bps"
+                )
+                return None
+
+            # Calculate gross profit
             gross_profit = amount_base_final - notional_amount
             gross_bps = float((gross_profit / notional_amount) * 10000)
 
-            # Apply slippage haircut
-            slippage_factor = Decimal(1.0) - (
-                Decimal(self.config.max_slippage_bps) / 10000
+            # Calculate slippage cost in USD (conservative estimate)
+            slippage_cost_usd = notional_amount * (Decimal(total_slippage_bps) / 10000)
+
+            # Calculate gas cost in USD
+            gas_price_gwei = self.dex_client.get_gas_price()
+            # For paper mode, use realistic but lower gas assumptions
+            if self.dex_client.paper_mode:
+                gas_limit = 250000  # More realistic for 3-leg arb
+            else:
+                gas_limit = self.config.gas_limit_cap
+            gas_cost_wei = gas_limit * gas_price_gwei * 10**9
+            gas_cost_usd = self._estimate_gas_cost_usd(gas_limit, gas_price_gwei)
+
+            # Calculate breakeven
+            breakeven_before_gas = gross_profit - slippage_cost_usd
+            breakeven_after_gas = breakeven_before_gas - gas_cost_usd
+
+            # Log detailed breakeven calculation
+            logger.debug(
+                f"Route {route.base}->{route.mid}->{route.alt}: "
+                f"gross_profit=${gross_profit:.2f}, "
+                f"slippage_cost=${slippage_cost_usd:.2f}, "
+                f"gas_cost=${gas_cost_usd:.2f}, "
+                f"breakeven_before_gas=${breakeven_before_gas:.2f}, "
+                f"breakeven_after_gas=${breakeven_after_gas:.2f}"
             )
-            amount_base_after_slippage = amount_base_final * slippage_factor
 
-            # Calculate gas cost in base asset terms (simplified)
-            # Lower gas cost for demo purposes
-            gas_cost_wei = self.gas_cost_constant_wei
-            gas_cost_base = Decimal("5.0")  # Fixed $5 gas cost for paper trading
+            # Check if breakeven after gas meets threshold
+            min_profit_threshold = notional_amount * (
+                Decimal(self.config.min_profit_bps) / 10000
+            )
+            if breakeven_after_gas < min_profit_threshold:
+                logger.debug(
+                    f"Breakeven after gas ${breakeven_after_gas:.2f} below threshold ${min_profit_threshold:.2f}"
+                )
+                return None
 
-            # Net profit after gas and slippage
-            net_profit = amount_base_after_slippage - notional_amount - gas_cost_base
+            # Calculate net profit in bps
+            net_profit = breakeven_after_gas
             net_bps = float((net_profit / notional_amount) * 10000)
 
             return ArbitrageOpportunity(
@@ -118,7 +229,13 @@ class ArbitrageSolver:
                 gross_bps=gross_bps,
                 net_bps=net_bps,
                 gas_cost_wei=gas_cost_wei,
+                gas_cost_usd=gas_cost_usd,
                 notional_amount=notional_amount,
+                per_leg_slippage_bps=per_leg_slippage_bps,
+                total_slippage_bps=total_slippage_bps,
+                slippage_cost_usd=slippage_cost_usd,
+                breakeven_before_gas=breakeven_before_gas,
+                breakeven_after_gas=breakeven_after_gas,
             )
 
         except Exception as e:

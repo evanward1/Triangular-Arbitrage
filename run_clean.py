@@ -1,199 +1,230 @@
 #!/usr/bin/env python3
 """
-Simple Clean Arbitrage Runner
-Just run: python run_clean.py
+Unified Arbitrage Runner (CEX + DEX)
+
+Examples:
+  # Interactive menu
+  python run_clean.py
+
+  # CEX paper / live
+  python run_clean.py cex --paper
+  python run_clean.py cex --live
+
+  # DEX paper mode (default if neither --paper nor --live specified)
+  python run_clean.py dex --paper --quiet --once
+  python run_clean.py dex --quiet --once  # same as above, --paper is default
+
+  # DEX live mode (private, simulate-first assumed by your config)
+  python run_clean.py dex --live --config configs/dex_mev.example.yaml
 """
-
-import asyncio
+import argparse
 import os
-import sqlite3
+import subprocess
+import sys
+from pathlib import Path
 
-from dotenv import load_dotenv
+# ---------- helpers ----------
 
-from trading_arbitrage import RealTriangularArbitrage
+REPO = Path(__file__).resolve().parent
 
 
-def clear_database():
-    """Clear stuck cycles"""
+def file_exists(*paths):
+    """Check if any of the given paths exist, return first match."""
+    for p in paths:
+        full = REPO / p
+        if full.exists():
+            return full
+    return None
+
+
+def run(cmd):
+    """Run a command and return its exit code."""
     try:
-        conn = sqlite3.connect("trade_state.db")
-        conn.execute("DELETE FROM cycles")
-        conn.commit()
-        conn.close()
-        print("🧹 Database cleared")
-    except Exception:
-        pass
+        return subprocess.run(cmd, check=False).returncode
+    except KeyboardInterrupt:
+        print("\n⏸ Stopped by user")
+        return 0
 
 
-def run_arbitrage():
-    """Run arbitrage with 30-second feedback intervals"""
-    import sys
+# ---------- DEX wrapper ----------
 
-    # Load environment variables
-    load_dotenv()
 
-    clear_database()
-    print()
-
-    # Check for command line argument
-    if len(sys.argv) > 1:
-        choice = sys.argv[1]
-    else:
-        print("Choose trading mode:")
-        print("1. 📝 Paper Trading (Simulation - Safe)")
-        print("2. 💰 Live Trading (Real Money - Risk)")
-        print()
-        choice = input("Enter your choice (1 or 2): ").strip()
-
-    if choice == "1":
-        trading_mode = "paper"
-        print("📝 PAPER TRADING MODE - Simulation only")
-    elif choice == "2":
-        trading_mode = "live"
-        print("⚠️  LIVE TRADING MODE - Using real money!")
-        print("🔑 Checking API keys...")
-
-        # Check if API keys are configured
-        kraken_key = os.getenv("KRAKEN_API_KEY")
-        binance_key = os.getenv("BINANCE_API_KEY")
-        coinbase_key = os.getenv("COINBASE_API_KEY")
-
-        if not any([kraken_key, binance_key, coinbase_key]):
-            print("❌ No API keys found!")
-            print("Please set up your API keys in .env file first.")
-            print("See TRADING_SETUP.md for instructions.")
-            return
-
-        print("✅ API keys configured")
-        print()
-
-        # Allow skipping confirmation with environment variable for testing
-        skip_confirmation = (
-            os.getenv("SKIP_LIVE_CONFIRMATION", "false").lower() == "true"
+def run_dex(args):
+    """
+    Prefer the 'run_dex_paper.py' in repo root, then 'backtests/run_dex_paper.py'.
+    Pass through --quiet/--once and config path. For --live we just remove paper-guards;
+    your config/env governs private submission & simulation.
+    """
+    entry = file_exists("run_dex_paper.py", "backtests/run_dex_paper.py")
+    if not entry:
+        print(
+            "❌ Could not find run_dex_paper.py (tried ./ and ./backtests/).",
+            file=sys.stderr,
         )
+        return 1
 
-        if skip_confirmation:
-            print("⚠️  SKIP_LIVE_CONFIRMATION enabled - proceeding automatically")
-        else:
-            confirmation = input(
-                "⚠️  Are you absolutely sure you want to proceed with LIVE "
-                "trading? Type 'YES': "
-            )
+    cmd = [sys.executable, str(entry)]
+    if args.quiet:
+        cmd.append("--quiet")
+    if args.once:
+        cmd.append("--once")
+    if args.config:
+        # most runners read from configs/dex_mev.example.yaml by default;
+        # expose a standard env to point at another file.
+        os.environ["DEX_MEV_CONFIG"] = args.config
+    if args.live:
+        os.environ["DEX_LIVE_MODE"] = "true"  # your executor can check this
+    # Note: --paper flag is accepted but doesn't need special handling (paper is default)
+
+    print(f"▶ DEX runner: {' '.join(cmd)}")
+    return run(cmd)
+
+
+# ---------- CEX wrapper ----------
+
+
+def run_cex(args):
+    """
+    Preserve your current CEX flow. We try to call the same thing your
+    existing run_clean menu used to, with explicit flags.
+    """
+    # Your project likely has a main CEX entry (keep this adaptive):
+    # Try to find the trading_arbitrage module first
+    try:
+        # Import check - if this works, we can use the async method
+        import asyncio
+
+        from dotenv import load_dotenv
+
+        from trading_arbitrage import RealTriangularArbitrage
+
+        load_dotenv()
+
+        mode = "paper" if args.paper else "live"
+
+        if mode == "live":
+            print("⚠️  CEX LIVE TRADING MODE - Using real money!")
+            # Check API keys
+            kraken_key = os.getenv("KRAKEN_API_KEY")
+            binance_key = os.getenv("BINANCE_API_KEY")
+            coinbase_key = os.getenv("COINBASE_API_KEY")
+
+            if not any([kraken_key, binance_key, coinbase_key]):
+                print("❌ No API keys found!")
+                print("Please set up your API keys in .env file first.")
+                return 1
+
+            confirmation = input("⚠️  Type 'YES' to proceed with LIVE trading: ")
             if confirmation != "YES":
                 print("❌ Trading cancelled for safety")
-                return
-    else:
-        print("❌ Invalid choice. Please enter 1 or 2.")
-        return
+                return 0
 
-    max_position = float(os.getenv("MAX_POSITION_SIZE", "100"))
-    thr = max(0.0, float(os.getenv("MIN_PROFIT_THRESHOLD", "0.5")))
+        print(f"🚀 Starting CEX {mode.upper()} trading...")
 
-    # Calculate breakeven gross for display (assumes taker-only by default)
-    taker_fee = 0.001  # 0.10% typical
-    slippage_floor_bps = float(os.getenv("SLIPPAGE_FLOOR_BPS", "2"))
-    slip = slippage_floor_bps / 100.0
-    fee_cost = (3 * taker_fee) * 100  # Assume all taker
-    breakeven_gross = thr + fee_cost + slip
+        # Run the trading session
+        async def run_session():
+            exchanges_to_try = ["binanceus", "kraken", "kucoin", "coinbase"]
+            for exchange_name in exchanges_to_try:
+                print(f"🔄 Trying {exchange_name}...")
+                try:
+                    trader = RealTriangularArbitrage(exchange_name, mode)
+                    await trader.run_trading_session()
+                    break
+                except Exception as e:
+                    print(f"❌ {exchange_name} failed: {e}")
+                    continue
 
-    print(f"💰 Position: ${max_position:.0f} | Threshold: {thr:.2f}% NET")
-    print(
-        f"   (need gross≥{breakeven_gross:.2f}% = {thr:.2f}% threshold + {fee_cost:.2f}% fees + {slip:.2f}% slip)"
+        asyncio.run(run_session())
+        return 0
+
+    except ImportError:
+        # Fallback to subprocess approach
+        candidates = [
+            ["python3", "run.py", "--paper" if args.paper else "--live"],
+            [sys.executable, "run.py", "--paper" if args.paper else "--live"],
+            [sys.executable, "main.py", "--paper" if args.paper else "--live"],
+        ]
+
+        for cmd in candidates:
+            if file_exists(cmd[1]):
+                print(f"▶ CEX runner: {' '.join(cmd)}")
+                return run(cmd)
+
+        print(
+            "❌ Could not find a CEX entrypoint (tried run.py/main.py).", file=sys.stderr
+        )
+        return 1
+
+
+# ---------- argparse ----------
+
+
+def build_parser():
+    """Build argument parser with subcommands."""
+    p = argparse.ArgumentParser(description="Unified Arbitrage Runner")
+    sub = p.add_subparsers(dest="mode")
+
+    # CEX
+    cex = sub.add_parser("cex", help="Run CEX arbitrage")
+    g = cex.add_mutually_exclusive_group()
+    g.add_argument("--paper", action="store_true", help="CEX paper mode")
+    g.add_argument("--live", action="store_true", help="CEX live mode")
+    cex.set_defaults(func=run_cex)
+
+    # DEX
+    dex = sub.add_parser("dex", help="Run DEX MEV arbitrage")
+    dex.add_argument("--quiet", "-q", action="store_true", help="Less noisy output")
+    dex.add_argument("--once", action="store_true", help="Single scan and exit")
+    dex.add_argument("--config", type=str, help="Path to DEX config YAML")
+    dex_mode = dex.add_mutually_exclusive_group()
+    dex_mode.add_argument("--paper", action="store_true", help="Paper mode (default)")
+    dex_mode.add_argument(
+        "--live", action="store_true", help="Live mode (private submission)"
     )
-    print()
+    dex.set_defaults(func=run_dex)
 
-    # Run directly without subprocess
-    try:
-        asyncio.run(run_arbitrage_direct(trading_mode))
-    except KeyboardInterrupt:
-        pass  # Clean exit, summary already printed
+    return p
 
 
-async def run_arbitrage_direct(trading_mode):
-    """Run arbitrage detection directly"""
+def interactive_menu():
+    """Show interactive menu for mode selection."""
+    print("\n=== Unified Arbitrage Runner ===")
+    print("1) CEX  (paper)")
+    print("2) CEX  (live)")
+    print("3) DEX  (paper)")
+    print("4) DEX  (live)")
+    choice = input("Choose [1-4]: ").strip()
+    if choice == "1":
+        return run_cex(argparse.Namespace(paper=True, live=False))
+    if choice == "2":
+        return run_cex(argparse.Namespace(paper=False, live=True))
+    if choice == "3":
+        return run_dex(
+            argparse.Namespace(
+                quiet=False, once=False, config=None, paper=False, live=False
+            )
+        )
+    if choice == "4":
+        return run_dex(
+            argparse.Namespace(
+                quiet=False, once=False, config=None, paper=False, live=True
+            )
+        )
+    print("Unknown choice.")
+    return 1
 
-    if trading_mode == "live":
-        # Use real trading system with API
-        exchanges_to_try = ["binanceus", "kraken", "kucoin", "coinbase"]
 
-        for exchange_name in exchanges_to_try:
-            print(f"🔄 Trying {exchange_name}...")
-            try:
-                trader = RealTriangularArbitrage(exchange_name, trading_mode)
-                await trader.run_trading_session()
-                break
-            except Exception as e:
-                print(f"❌ {exchange_name} failed: {e}")
-                continue
-    else:
-        # Use paper trading with real trading code (for testing)
-        exchanges_to_try = ["binanceus", "kraken", "kucoin", "coinbase"]
-
-        for exchange_name in exchanges_to_try:
-            print(f"🔄 Trying {exchange_name}...")
-            try:
-                trader = RealTriangularArbitrage(exchange_name, trading_mode)
-                await trader.run_trading_session()
-                break
-            except Exception as e:
-                print(f"❌ {exchange_name} failed: {e}")
-                continue
-
-        # Old simulator code (not used anymore)
-        """
-        exchanges_to_try = ["kraken", "coinbase", "bitfinex", "huobi"]
-
-        for exchange_name in exchanges_to_try:
-            print(f"🔄 Trying {exchange_name}...")
-            try:
-                detector = TriangularArbitrageDetector(exchange_name)
-
-                # Run continuously
-                cycle_count = 0
-                start_time = time.time()
-
-                while True:
-                    cycle_count += 1
-                    print(f"\n{'='*60}")
-                    runtime = time.time() - start_time
-                    print(
-                        f"⚡ CYCLE #{cycle_count} | Runtime: {runtime:.0f}s | "
-                        f"Balance: ${detector.balance:.2f}"
-                    )
-                    print("=" * 60)
-
-                    # Fetch data
-                    if not await detector.fetch_data():
-                        print("❌ Failed to fetch data, retrying...")
-                        await asyncio.sleep(5)
-                        continue
-
-                    # Build graph
-                    detector.build_graph()
-
-                    # Find opportunities
-                    opportunities = detector.find_arbitrage_opportunities()
-
-                    # Display top 2
-                    if opportunities:
-                        print(
-                            f"✅ Found {len(opportunities)} opportunities | Executing top 2\n"
-                        )
-                        detector.display_opportunities(opportunities, max_display=2)
-                    else:
-                        print("😔 No profitable opportunities found")
-
-                    # Wait 2 seconds
-                    await asyncio.sleep(2)
-
-            except KeyboardInterrupt:
-                print("\n🛑 Stopped by user")
-                break
-            except Exception as e:
-                print(f"❌ {exchange_name} failed: {e}")
-                continue
-        """
+def main():
+    """Main entry point."""
+    parser = build_parser()
+    if len(sys.argv) == 1:
+        return interactive_menu()
+    args = parser.parse_args()
+    if hasattr(args, "func"):
+        return args.func(args)
+    parser.print_help()
+    return 2
 
 
 if __name__ == "__main__":
-    run_arbitrage()
+    raise SystemExit(main())
