@@ -5,8 +5,13 @@ import OpportunitiesPanel from './components/OpportunitiesPanel';
 import TradeHistory from './components/TradeHistory';
 import LogsPanel from './components/LogsPanel';
 import SettingsPanel from './components/SettingsPanel';
+import DexMevDashboard from './components/DexMevDashboard';
 
 function App() {
+  const [activeTab, setActiveTab] = useState(() => {
+    return localStorage.getItem('activeTab') || 'cex';
+  });
+
   const [balance, setBalance] = useState({
     total_equity_usd: 0,
     cash_balance: 0,
@@ -29,6 +34,11 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [tradingMode, setTradingMode] = useState('paper');
   const [selectedMode, setSelectedMode] = useState('paper');
+
+  // Save tab selection to localStorage
+  useEffect(() => {
+    localStorage.setItem('activeTab', activeTab);
+  }, [activeTab]);
 
   // WebSocket connection
   useEffect(() => {
@@ -160,49 +170,72 @@ function App() {
   return (
     <div className="App">
       <header className="App-header">
-        <h1>🔺 Triangular Arbitrage Dashboard</h1>
-        <div className="header-controls">
-          <div className={`status-indicator ${connected ? 'connected' : 'disconnected'}`}>
-            {connected ? '🟢 Connected' : '🔴 Disconnected'}
-          </div>
+        <h1>Arbitrage Trading Platform</h1>
 
-          {botRunning && (
-            <div className={`mode-indicator ${tradingMode === 'live' ? 'live' : 'paper'}`}>
-              {tradingMode === 'paper' ? '📝 Paper Trading' : '💰 Live Trading'}
-            </div>
-          )}
-
-          {!botRunning && (
-            <select
-              className="mode-selector"
-              value={selectedMode}
-              onChange={(e) => setSelectedMode(e.target.value)}
-            >
-              <option value="paper">📝 Paper Trading</option>
-              <option value="live">💰 Live Trading</option>
-            </select>
-          )}
-
+        <div className="tabs">
           <button
-            className={`bot-control ${botRunning ? 'stop' : 'start'}`}
-            onClick={botRunning ? stopBot : startBot}
+            className={`tab ${activeTab === 'cex' ? 'active' : ''}`}
+            onClick={() => setActiveTab('cex')}
           >
-            {botRunning ? '⏹ Stop Bot' : '▶️ Start Bot'}
+            CEX
+          </button>
+          <button
+            className={`tab ${activeTab === 'dex' ? 'active' : ''}`}
+            onClick={() => setActiveTab('dex')}
+          >
+            DEX & MEV
           </button>
         </div>
+
+        {activeTab === 'cex' && (
+          <div className="header-controls">
+            <div className={`status-indicator ${connected ? 'connected' : 'disconnected'}`}>
+              {connected ? 'Connected' : 'Disconnected'}
+            </div>
+
+            {botRunning && (
+              <div className={`mode-indicator ${tradingMode === 'live' ? 'live' : 'paper'}`}>
+                {tradingMode === 'paper' ? 'Paper Trading' : 'Live Trading'}
+              </div>
+            )}
+
+            {!botRunning && (
+              <select
+                className="mode-selector"
+                value={selectedMode}
+                onChange={(e) => setSelectedMode(e.target.value)}
+              >
+                <option value="paper">Paper Trading</option>
+                <option value="live">Live Trading</option>
+              </select>
+            )}
+
+            <button
+              className={`bot-control ${botRunning ? 'stop' : 'start'}`}
+              onClick={botRunning ? stopBot : startBot}
+            >
+              {botRunning ? 'Stop Bot' : 'Start Bot'}
+            </button>
+          </div>
+        )}
       </header>
 
       <main className="App-main">
-        <Dashboard balance={balance} stats={stats} />
+        {activeTab === 'cex' && (
+          <>
+            <Dashboard balance={balance} stats={stats} />
+            <SettingsPanel botRunning={botRunning} />
+            <div className="panels-row">
+              <OpportunitiesPanel opportunities={opportunities} />
+              <TradeHistory trades={trades} />
+            </div>
+            <LogsPanel logs={logs} />
+          </>
+        )}
 
-        <SettingsPanel botRunning={botRunning} />
-
-        <div className="panels-row">
-          <OpportunitiesPanel opportunities={opportunities} />
-          <TradeHistory trades={trades} />
-        </div>
-
-        <LogsPanel logs={logs} />
+        {activeTab === 'dex' && (
+          <DexMevDashboard />
+        )}
       </main>
     </div>
   );

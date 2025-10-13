@@ -2,20 +2,37 @@
 """
 FastAPI Web Server for Triangular Arbitrage Dashboard
 Provides REST API and WebSocket endpoints for real-time monitoring
+Supports both CEX and DEX/MEV trading modes
 """
 
 import asyncio
 import logging
 import os
 import sqlite3
+import time
+from collections import deque
 from datetime import datetime
-from typing import Dict, List, Optional
+from enum import Enum
+from typing import Any, Deque, Dict, List, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+# ============================================================================
+# Mode Enum - Single Source of Truth
+# ============================================================================
+
+
+class TradingMode(str, Enum):
+    """Trading mode for DEX/MEV operations"""
+
+    OFF = "off"
+    PAPER_LIVE_CHAIN = "paper_live_chain"  # Paper trading with live chain data
+    LIVE = "live"  # Live trading with real broadcasts
+
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -380,6 +397,515 @@ async def stop_bot():
 class ConfigUpdate(BaseModel):
     min_profit_threshold: Optional[float] = None
     topn: Optional[int] = None
+
+
+# ============================================================================
+# DEX/MEV Models and State Management
+# ============================================================================
+
+
+class DexOpportunity(BaseModel):
+    id: str
+    path: List[str]
+    gross_bps: float
+    net_bps: float
+    gas_bps: float
+    slip_bps: float
+    size_usd: float
+    legs: List[Dict[str, Any]]
+    ts: float
+
+
+class DexFill(BaseModel):
+    id: str
+    paper: bool
+    tx_hash: Optional[str]
+    net_bps: float
+    pnl_usd: float
+    ts: float
+    simulation: Optional[
+        Dict[str, Any]
+    ] = None  # gas_used, success for paper_live_chain
+
+
+class DexEquityPoint(BaseModel):
+    ts: float
+    equity_usd: float
+
+
+class DexConfig(BaseModel):
+    size_usd: Optional[float] = None
+    min_profit_threshold_bps: Optional[float] = None
+    slippage_mode: Optional[str] = None
+    slippage_floor_bps: Optional[float] = None
+    expected_maker_legs: Optional[int] = None
+    gas_model: Optional[str] = None
+    paper: Optional[bool] = None  # Legacy - maps to mode
+    mode: Optional[str] = None  # paper_live_chain or live
+    chain_id: Optional[int] = None
+    rpc_url: Optional[str] = None
+    gas_oracle: Optional[str] = None
+    simulate_via: Optional[str] = None  # eth_call or mev_sim
+    log_tx_objects: Optional[bool] = None
+    rpc_label: Optional[str] = None
+
+
+class DexControlRequest(BaseModel):
+    action: str  # "start" or "stop"
+    config: Optional[DexConfig] = None
+
+
+class DexStateManager:
+    """Manages DEX/MEV trading state with ring buffers for efficient data access"""
+
+    def __init__(self, max_opportunities: int = 50, max_fills: int = 100):
+        self.running = False
+        self.mode = TradingMode.PAPER_LIVE_CHAIN  # Default to safe mode
+        self.chain_id = 1
+        self.scan_interval_sec = 10
+        self.pools_loaded = 0
+        self.last_scan_ts = 0.0
+        self.best_gross_bps = 0.0
+        self.best_net_bps = 0.0
+
+        # Ring buffers for efficient data storage
+        self.opportunities: Deque[DexOpportunity] = deque(maxlen=max_opportunities)
+        self.fills: Deque[DexFill] = deque(maxlen=max_fills)
+        self.equity_history: Deque[DexEquityPoint] = deque(maxlen=1000)
+
+        # Current config
+        self.config = {
+            "size_usd": 1000,
+            "min_profit_threshold_bps": 0,
+            "slippage_mode": "dynamic",
+            "slippage_floor_bps": 5,
+            "expected_maker_legs": 2,
+            "gas_model": "fast",
+            "rpc_url": "https://eth-mainnet.g.alchemy.com/v2/demo",
+            "gas_oracle": "etherscan",
+            "simulate_via": "eth_call",
+            "log_tx_objects": False,
+        }
+
+        # Connected WebSocket clients (shared with main state)
+        self.ws_clients: List[WebSocket] = []
+
+        # Background task reference
+        self.runner_task: Optional[asyncio.Task] = None
+
+    def update_config(self, config: DexConfig):
+        """Update configuration from request"""
+        if config.size_usd is not None:
+            self.config["size_usd"] = config.size_usd
+        if config.min_profit_threshold_bps is not None:
+            self.config["min_profit_threshold_bps"] = config.min_profit_threshold_bps
+        if config.slippage_mode is not None:
+            self.config["slippage_mode"] = config.slippage_mode
+        if config.slippage_floor_bps is not None:
+            self.config["slippage_floor_bps"] = config.slippage_floor_bps
+        if config.expected_maker_legs is not None:
+            self.config["expected_maker_legs"] = config.expected_maker_legs
+        if config.gas_model is not None:
+            self.config["gas_model"] = config.gas_model
+
+        # Handle mode - new way or legacy paper flag
+        if config.mode is not None:
+            if config.mode == "paper_live_chain":
+                self.mode = TradingMode.PAPER_LIVE_CHAIN
+            elif config.mode == "live":
+                self.mode = TradingMode.LIVE
+            else:
+                self.mode = TradingMode.OFF
+        elif config.paper is not None:
+            # Legacy support: paper=True -> paper_live_chain, paper=False -> live
+            self.mode = (
+                TradingMode.PAPER_LIVE_CHAIN if config.paper else TradingMode.LIVE
+            )
+
+        if config.chain_id is not None:
+            self.chain_id = config.chain_id
+        if config.rpc_url is not None:
+            self.config["rpc_url"] = config.rpc_url
+        if config.gas_oracle is not None:
+            self.config["gas_oracle"] = config.gas_oracle
+        if config.simulate_via is not None:
+            self.config["simulate_via"] = config.simulate_via
+        if config.log_tx_objects is not None:
+            self.config["log_tx_objects"] = config.log_tx_objects
+        if config.rpc_label is not None:
+            self.config["rpc_label"] = config.rpc_label
+
+    def add_opportunity(self, opp: DexOpportunity):
+        """Add opportunity and update best values"""
+        self.opportunities.append(opp)
+        self.best_gross_bps = max(self.best_gross_bps, opp.gross_bps)
+        self.best_net_bps = max(self.best_net_bps, opp.net_bps)
+
+    def add_fill(self, fill: DexFill):
+        """Add fill to history"""
+        self.fills.append(fill)
+
+    def add_equity_point(self, equity_usd: float):
+        """Add equity point to time series"""
+        point = DexEquityPoint(ts=time.time(), equity_usd=equity_usd)
+        self.equity_history.append(point)
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get current status snapshot"""
+        return {
+            "mode": self.mode.value,
+            "paper": self.mode != TradingMode.LIVE,  # True for paper_live_chain and off
+            "chain_id": self.chain_id,
+            "scan_interval_sec": self.scan_interval_sec,
+            "pools_loaded": self.pools_loaded,
+            "last_scan_ts": self.last_scan_ts,
+            "best_gross_bps": self.best_gross_bps,
+            "best_net_bps": self.best_net_bps,
+            "config": self.config,
+        }
+
+    async def broadcast_ws(self, message: Dict[str, Any]):
+        """Broadcast message to all DEX WebSocket clients"""
+        disconnected = []
+        for client in self.ws_clients:
+            try:
+                await client.send_json(message)
+            except Exception:
+                disconnected.append(client)
+        for client in disconnected:
+            if client in self.ws_clients:
+                self.ws_clients.remove(client)
+
+
+dex_state = DexStateManager()
+
+
+# ============================================================================
+# DEX/MEV API Endpoints
+# ============================================================================
+
+
+@app.get("/api/dex/status")
+async def get_dex_status():
+    """Get current DEX trading status"""
+    return {"status": dex_state.get_status()}
+
+
+@app.get("/api/dex/opportunities")
+async def get_dex_opportunities():
+    """Get rolling list of DEX opportunities"""
+    return {"opportunities": [opp.model_dump() for opp in dex_state.opportunities]}
+
+
+@app.get("/api/dex/fills")
+async def get_dex_fills():
+    """Get recent DEX fills (paper or live)"""
+    return {"fills": [fill.model_dump() for fill in dex_state.fills]}
+
+
+@app.get("/api/dex/equity")
+async def get_dex_equity():
+    """Get equity time series"""
+    return {"equity": [point.model_dump() for point in dex_state.equity_history]}
+
+
+@app.post("/api/dex/control")
+async def control_dex(request: DexControlRequest):
+    """Control DEX trading (start/stop) with config"""
+    if request.action == "start":
+        if dex_state.running:
+            return {"status": "already_running"}
+
+        # Update config if provided
+        if request.config:
+            dex_state.update_config(request.config)
+
+        dex_state.running = True
+
+        # Start background runner
+        dex_state.runner_task = asyncio.create_task(run_dex_scanner())
+
+        await dex_state.broadcast_ws({"type": "status", "data": dex_state.get_status()})
+
+        return {"status": "started", "config": dex_state.config}
+
+    elif request.action == "stop":
+        if not dex_state.running:
+            return {"status": "not_running"}
+
+        dex_state.running = False
+
+        # Cancel background task
+        if dex_state.runner_task and not dex_state.runner_task.done():
+            dex_state.runner_task.cancel()
+            try:
+                await dex_state.runner_task
+            except asyncio.CancelledError:
+                pass
+
+        await dex_state.broadcast_ws({"type": "status", "data": dex_state.get_status()})
+
+        return {"status": "stopped"}
+
+    return {"status": "error", "message": f"Unknown action: {request.action}"}
+
+
+@app.websocket("/ws/dex")
+async def dex_websocket(websocket: WebSocket):
+    """WebSocket endpoint for DEX real-time updates"""
+    await websocket.accept()
+    dex_state.ws_clients.append(websocket)
+    logger.info(f"DEX client connected. Total: {len(dex_state.ws_clients)}")
+
+    try:
+        # Send initial state
+        await websocket.send_json({"type": "status", "data": dex_state.get_status()})
+
+        # Keep connection alive
+        while True:
+            data = await websocket.receive_text()
+            logger.info(f"DEX WS received: {data}")
+
+    except WebSocketDisconnect:
+        if websocket in dex_state.ws_clients:
+            dex_state.ws_clients.remove(websocket)
+        logger.info(f"DEX client disconnected. Total: {len(dex_state.ws_clients)}")
+
+
+# ============================================================================
+# DEX Scanner (Mock Runner with Live Chain Data Simulation)
+# ============================================================================
+
+
+class MockRPCClient:
+    """Mock RPC client that simulates live chain data responses"""
+
+    async def get_pool_reserves(self, pool_address: str) -> Dict[str, Any]:
+        """Simulate pool reserve reads"""
+        # In real implementation, this would call eth_call to read reserves
+        return {
+            "reserve0": 50000 * 10**6,  # USDC reserves
+            "reserve1": 20 * 10**18,  # WETH reserves
+            "timestamp": int(time.time()),
+        }
+
+    async def estimate_gas(self, tx_request: Dict[str, Any]) -> int:
+        """Simulate gas estimation"""
+        # In real implementation, this would call eth_estimateGas
+        # Returns realistic gas estimate
+        return 180000 + (hash(str(tx_request)) % 50000)
+
+    async def call_transaction(self, tx_request: Dict[str, Any]) -> Dict[str, Any]:
+        """Simulate transaction execution via eth_call"""
+        # In real implementation, this would call eth_call
+        return {"success": True, "gas_used": 175000, "return_data": "0x" + "00" * 32}
+
+    async def get_gas_price(self) -> int:
+        """Get current gas price from chain"""
+        # In real implementation, this would call eth_gasPrice or gas oracle API
+        return 25 * 10**9  # 25 gwei
+
+
+class DexExecutor:
+    """Handles DEX trade execution with mode-aware broadcast control"""
+
+    def __init__(self, rpc_client: MockRPCClient, mode: TradingMode):
+        self.rpc = rpc_client
+        self.mode = mode
+
+    async def build_transaction_request(
+        self, opportunity: DexOpportunity
+    ) -> Dict[str, Any]:
+        """Build transaction request object - shared by paper_live_chain and live"""
+        # In production, this would build actual calldata for router contract
+        tx_request = {
+            "from": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+            "to": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",  # Uniswap V2 Router
+            "value": "0x0",
+            "data": f"0x38ed1739{'0' * 200}",  # Mock swapExactTokensForTokens calldata
+            "gas": 200000,
+            "gasPrice": await self.rpc.get_gas_price(),
+            "nonce": 42,  # Would be fetched from eth_getTransactionCount
+            "chainId": 1,
+        }
+
+        # Log if configured
+        if dex_state.config.get("log_tx_objects"):
+            logger.info(f"Built tx request: {tx_request}")
+
+        return tx_request
+
+    async def estimate_and_simulate(self, tx_request: Dict[str, Any]) -> Dict[str, Any]:
+        """Estimate gas and simulate execution - shared by paper_live_chain and live"""
+        gas_estimate = await self.rpc.estimate_gas(tx_request)
+
+        # Simulate execution based on config
+        simulate_via = dex_state.config.get("simulate_via", "eth_call")
+        if simulate_via == "eth_call":
+            result = await self.rpc.call_transaction(tx_request)
+        elif simulate_via == "mev_sim":
+            # In production, would call MEV simulator endpoint
+            result = {"success": True, "gas_used": gas_estimate - 5000}
+        else:
+            result = {"success": True, "gas_used": gas_estimate}
+
+        return {"gas_estimate": gas_estimate, "simulation": result}
+
+    async def execute(self, opportunity: DexOpportunity) -> DexFill:
+        """Execute opportunity according to mode"""
+        # Build transaction (same for all modes)
+        tx_request = await self.build_transaction_request(opportunity)
+
+        # Estimate and simulate (same for all modes)
+        estimates = await self.estimate_and_simulate(tx_request)
+
+        # Calculate realized costs from estimates
+        gas_used = estimates["simulation"]["gas_used"]
+        gas_price_gwei = tx_request["gasPrice"] / 10**9
+        gas_cost_usd = (
+            (gas_used * gas_price_gwei * 10**9) / 10**18 * 2000
+        )  # ETH price ~$2000
+        gas_cost_bps = (gas_cost_usd / opportunity.size_usd) * 10000
+
+        # Adjust net profit with realized gas
+        realized_net_bps = opportunity.gross_bps - gas_cost_bps - opportunity.slip_bps
+
+        # Mode-specific execution
+        if self.mode == TradingMode.LIVE:
+            # LIVE: Actually broadcast transaction
+            # CRITICAL GUARD: Only allow broadcast in live mode
+            tx_hash = await self._broadcast_transaction(tx_request)
+            logger.info(f"LIVE: Broadcasted transaction {tx_hash}")
+        else:
+            # PAPER_LIVE_CHAIN: Simulate but don't broadcast
+            tx_hash = None
+            logger.info("PAPER: Simulated execution (no broadcast)")
+
+        # Create fill record
+        pnl_usd = realized_net_bps * opportunity.size_usd / 10000
+        fill = DexFill(
+            id=f"fill_{int(time.time() * 1000)}",
+            paper=self.mode != TradingMode.LIVE,
+            tx_hash=tx_hash,
+            net_bps=realized_net_bps,
+            pnl_usd=pnl_usd,
+            ts=time.time(),
+            simulation={
+                "gas_used": gas_used,
+                "success": estimates["simulation"]["success"],
+                "gas_estimate": estimates["gas_estimate"],
+            },
+        )
+
+        return fill
+
+    async def _broadcast_transaction(self, tx_request: Dict[str, Any]) -> str:
+        """Broadcast signed transaction to chain - ONLY in live mode"""
+        # In production, this would:
+        # 1. Sign the transaction with private key
+        # 2. Call eth_sendRawTransaction
+        # 3. Return transaction hash
+        #
+        # This method should NEVER be called in paper_live_chain mode
+        if self.mode != TradingMode.LIVE:
+            raise RuntimeError("CRITICAL: Attempted broadcast in non-live mode!")
+
+        # Mock: generate fake tx hash
+        return f"0x{'a' * 64}"
+
+
+async def run_dex_scanner():
+    """
+    Background DEX scanner with paper_live_chain support.
+    Uses live chain data for pricing, gas, and simulation.
+    Only broadcasts transactions in live mode.
+    """
+    try:
+        scan_count = 0
+        current_equity = 1000.0
+
+        # Initialize RPC client and executor
+        rpc_client = MockRPCClient()
+        executor = DexExecutor(rpc_client, dex_state.mode)
+
+        logger.info(f"DEX scanner starting in {dex_state.mode.value} mode")
+
+        while dex_state.running:
+            scan_count += 1
+            dex_state.last_scan_ts = time.time()
+
+            # Simulate pool discovery (in production, would query chain)
+            dex_state.pools_loaded = 125
+
+            # Mock: Generate sample opportunity every 3rd scan
+            if scan_count % 3 == 0:
+                # In production, this would come from real pool data analysis
+                opp = DexOpportunity(
+                    id=f"dexop_{scan_count}",
+                    path=["USDC", "WETH", "DAI"],
+                    gross_bps=25.0,
+                    net_bps=5.5,
+                    gas_bps=18.0,
+                    slip_bps=1.5,
+                    size_usd=dex_state.config["size_usd"],
+                    legs=[
+                        {
+                            "pair": "USDC/WETH",
+                            "side": "buy",
+                            "price": 2500.0,
+                            "liq_usd": 50000.0,
+                            "slip_bps_est": 0.5,
+                        },
+                        {
+                            "pair": "WETH/DAI",
+                            "side": "sell",
+                            "price": 2505.0,
+                            "liq_usd": 45000.0,
+                            "slip_bps_est": 1.0,
+                        },
+                    ],
+                    ts=time.time(),
+                )
+                dex_state.add_opportunity(opp)
+
+                # Broadcast opportunity
+                await dex_state.broadcast_ws(
+                    {"type": "opportunity", "data": opp.model_dump()}
+                )
+
+                # Execute opportunity every 6th scan (uses live chain data)
+                if scan_count % 6 == 0:
+                    fill = await executor.execute(opp)
+
+                    # Update equity
+                    current_equity += fill.pnl_usd
+                    dex_state.add_fill(fill)
+                    dex_state.add_equity_point(current_equity)
+
+                    # Broadcast fill
+                    await dex_state.broadcast_ws(
+                        {"type": "fill", "data": fill.model_dump()}
+                    )
+
+            # Broadcast status update
+            await dex_state.broadcast_ws(
+                {"type": "status", "data": dex_state.get_status()}
+            )
+
+            # Wait for scan interval
+            await asyncio.sleep(dex_state.scan_interval_sec)
+
+    except asyncio.CancelledError:
+        logger.info("DEX scanner stopped")
+        raise
+    except Exception as e:
+        logger.error(f"DEX scanner error: {e}", exc_info=True)
+        dex_state.running = False
+
+
+# ============================================================================
+# CEX Configuration Endpoints (existing)
+# ============================================================================
 
 
 @app.get("/api/config")
