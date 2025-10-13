@@ -263,30 +263,33 @@ class RealTriangularArbitrage:
         self.paper_usdt = float(os.getenv("PAPER_USDT", "1000"))
         self.paper_usdc = float(os.getenv("PAPER_USDC", "1000"))
 
-        # Symbol curation
+        # Symbol curation (use sets for O(1) lookups)
         self.symbol_allowlist = (
-            os.getenv("SYMBOL_ALLOWLIST", "").split(",")
+            {
+                s.strip().upper()
+                for s in os.getenv("SYMBOL_ALLOWLIST", "").split(",")
+                if s.strip()
+            }
             if os.getenv("SYMBOL_ALLOWLIST")
-            else []
+            else set()
         )
-        self.symbol_allowlist = [
-            s.strip().upper() for s in self.symbol_allowlist if s.strip()
-        ]
+
         triangle_bases_env = os.getenv("TRIANGLE_BASES", "")
-        if triangle_bases_env:
-            self.triangle_bases = [
-                s.strip().upper() for s in triangle_bases_env.split(",") if s.strip()
-            ]
-        else:
-            self.triangle_bases = []  # Empty = allow all currencies as bases
+        self.triangle_bases = (
+            {s.strip().upper() for s in triangle_bases_env.split(",") if s.strip()}
+            if triangle_bases_env
+            else set()
+        )  # Empty = allow all currencies as bases
+
         self.exclude_symbols = (
-            os.getenv("EXCLUDE_SYMBOLS", "").split(",")
+            {
+                s.strip().upper()
+                for s in os.getenv("EXCLUDE_SYMBOLS", "").split(",")
+                if s.strip()
+            }
             if os.getenv("EXCLUDE_SYMBOLS")
-            else []
+            else set()
         )
-        self.exclude_symbols = [
-            s.strip().upper() for s in self.exclude_symbols if s.strip()
-        ]
 
         # Regex-based symbol exclusion for more flexible filtering
         import re
