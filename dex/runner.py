@@ -15,6 +15,8 @@ from typing import Dict, List, Optional, Tuple
 
 from web3 import Web3
 
+from triangular_arbitrage.validation.breakeven import BreakevenGuard, LegInfo
+
 from .adapters.v2 import fetch_pool, fetch_pool_async, swap_out
 from .config import DexConfig
 from .types import ArbRow, DexPool
@@ -63,24 +65,61 @@ class DexRunner:
         self.batch_size = 10
         self.batch_best_net = None
 
+        # Initialize BreakevenGuard for profitability validation
+        self.breakeven_guard = BreakevenGuard(max_leg_latency_ms=750)
+
     def connect(self) -> None:
         """
-        Connect to RPC and validate connection.
+        Connect to RPC and validate connection with fallback support.
+
+        Tries the configured RPC URL first, then falls back to public endpoints
+        if the primary fails.
 
         Raises:
-            Exception: If RPC connection fails
+            Exception: If all RPC connections fail
         """
-        print(f"🔗 Connecting to RPC: {self.config.rpc_url}")
-        self.web3 = Web3(
-            Web3.HTTPProvider(self.config.rpc_url, request_kwargs={"timeout": 10})
+        # List of fallback RPCs for Ethereum mainnet
+        fallback_rpcs = [
+            self.config.rpc_url,
+            "https://rpc.ankr.com/eth",
+            "https://eth.llamarpc.com",
+            "https://ethereum.publicnode.com",
+            "https://1rpc.io/eth",
+            "https://eth.drpc.org",
+        ]
+
+        last_error = None
+        for rpc_url in fallback_rpcs:
+            try:
+                print(f"🔗 Connecting to RPC: {rpc_url}")
+                self.web3 = Web3(
+                    Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 15})
+                )
+
+                if not self.web3.is_connected():
+                    raise Exception("Connection check failed")
+
+                # Verify we can query the chain
+                chain_id = self.web3.eth.chain_id
+                block = self.web3.eth.block_number
+                print(f"✓ Connected to chain {chain_id}, block {block}")
+
+                # Update config to remember working RPC
+                self.config.rpc_url = rpc_url
+                return
+
+            except Exception as e:
+                last_error = e
+                print(f"  ⚠️  Failed: {e}")
+                if rpc_url != fallback_rpcs[-1]:
+                    print("  → Trying next endpoint...")
+                continue
+
+        # If we get here, all RPCs failed
+        raise Exception(
+            f"Failed to connect to any RPC endpoint. Last error: {last_error}\n"
+            f"Tried {len(fallback_rpcs)} endpoints. Check your internet connection."
         )
-
-        if not self.web3.is_connected():
-            raise Exception(f"Failed to connect to RPC: {self.config.rpc_url}")
-
-        chain_id = self.web3.eth.chain_id
-        block = self.web3.eth.block_number
-        print(f"✓ Connected to chain {chain_id}, block {block}")
 
     def build_token_maps(self) -> None:
         """Build token address and decimals lookup maps."""
@@ -99,17 +138,24 @@ class DexRunner:
         Fetch all configured V2 pools from chain.
 
         Skips pools that fail to fetch (logs warning but continues).
+        Adds 0.5s delay between fetches to avoid rate limiting.
         """
         if not self.web3:
             raise RuntimeError("Must call connect() before fetch_pools()")
 
         self.pools = []
+        pool_count = 0
         for dex_cfg in self.config.dexes:
             if dex_cfg["kind"] != "v2":
                 print(f"⚠ Skipping {dex_cfg['name']} (only V2 supported for now)")
                 continue
 
             for pair_cfg in dex_cfg["pairs"]:
+                # Add delay between fetches to avoid rate limiting (skip first)
+                if pool_count > 0:
+                    time.sleep(0.5)
+                pool_count += 1
+
                 try:
                     pool = self._fetch_v2_pool(dex_cfg, pair_cfg)
                     self.pools.append(pool)
@@ -324,8 +370,9 @@ class DexRunner:
         """
         # Start with USD notional in quote token
         quote_decimals = self.decimals_of[quote_sym]
+        decimals_multiplier = Decimal(10) ** quote_decimals
 
-        initial_quote = self.config.max_position_usd * Decimal(10**quote_decimals)
+        initial_quote = Decimal(str(self.config.max_position_usd)) * decimals_multiplier
 
         # Leg 1: Buy base on poolA (quote -> base)
         # poolA reserves: r0=base, r1=quote
@@ -365,17 +412,73 @@ class DexRunner:
 
         # Subtract gas cost if override set
         if self.config.gas_cost_usd_override:
-            gas_cost_native = Decimal(self.config.gas_cost_usd_override) * Decimal(
-                10**quote_decimals
+            gas_cost_native = (
+                Decimal(str(self.config.gas_cost_usd_override)) * decimals_multiplier
             )
             net_quote -= gas_cost_native
 
         net_pct = float((net_quote / initial_quote - 1) * 100)
-        pnl_usd = float((net_quote - initial_quote) / Decimal(10**quote_decimals))
+        pnl_usd = float((net_quote - initial_quote) / decimals_multiplier)
 
         cycle_str = (
             f"{quote_sym} -> {base_sym} ({poolA.dex}) -> {quote_sym} ({poolB.dex})"
         )
+
+        # Build LegInfo for BreakevenGuard validation
+        # Leg 1: Buy base with quote on poolA
+        leg1_notional = float(initial_quote / decimals_multiplier)
+        leg1_price = float(amount_in_leg1 / base_amount)
+        leg1 = LegInfo(
+            pair=f"{base_sym}/{quote_sym}@{poolA.dex}",
+            side="buy",
+            price_used=leg1_price,
+            price_source="ask",
+            vwap_levels=1,
+            slippage_pct=float(poolA.fee * 100),
+            fee_pct=float(poolA.fee * 100),
+            notional_quote=leg1_notional,
+            latency_ms=0,
+        )
+
+        # Leg 2: Sell base for quote on poolB
+        leg2_notional = float(base_amount / decimals_multiplier)
+        leg2_price = float(final_quote_before_slip / base_amount)
+        leg2 = LegInfo(
+            pair=f"{base_sym}/{quote_sym}@{poolB.dex}",
+            side="sell",
+            price_used=leg2_price,
+            price_source="bid",
+            vwap_levels=1,
+            slippage_pct=float(self.config.slippage_decimal * 100),
+            fee_pct=float(poolB.fee * 100),
+            notional_quote=leg2_notional,
+            latency_ms=0,
+        )
+
+        # Validate with BreakevenGuard
+        # Note: For DEX, we have 2 legs not 3, and gas is in the config
+        gas_units = 0
+        gas_usd = (
+            float(self.config.gas_cost_usd_override)
+            if self.config.gas_cost_usd_override
+            else 0.0
+        )
+        total_notional = float(self.config.max_position_usd)
+
+        try:
+            be_line = self.breakeven_guard.compute(
+                legs=[leg1, leg2],
+                gross_pct=gross_pct,
+                gas_units=gas_units,
+                gas_price_quote=gas_usd / total_notional if total_notional > 0 else 0.0,
+                total_notional_quote=total_notional,
+                threshold_pct=float(self.config.threshold_net_pct),
+            )
+            # Update net_pct from validated calculation
+            net_pct = be_line.net_pct
+        except (ValueError, AssertionError):
+            # Validation failed, skip this opportunity
+            return None
 
         return ArbRow(
             cycle=cycle_str,
@@ -452,63 +555,81 @@ class DexRunner:
             return
 
         # Normal mode: print full details for every scan
-        print(f"\n🔍 Scan {scan_num}")
-        print("-" * 80)
+        print("\n")
+        print(f"   {'Top Arbitrage Routes Found':^66}")
+        print(f"   {'─' * 66}")
 
-        # Top 10 opportunities
-        top10 = rows[:10]
-        if not top10:
-            print("  (no valid cycles found)")
+        # Show top 10 opportunities (matching CEX style)
+        topn = min(10, len(rows))
+        if topn == 0:
+            print("   (no valid cycles found)")
         else:
-            for i, row in enumerate(top10, 1):
-                slip_str = f"slip={self.config.slippage_pct:.2f}%"
-                gas_str = ""
-                if self.config.gas_cost_usd_override:
-                    gas_str = f" gas={self.config.gas_pct:.2f}%"
+            for i, row in enumerate(rows[:topn], 1):
+                # Calculate fee percentage (included in gross calculation)
+                # For DEX: each leg has a fee, gross already accounts for it
+                # We need to back-calculate the fee impact
+                slippage_impact = self.config.slippage_pct
+                gas_impact = (
+                    self.config.gas_pct if self.config.gas_cost_usd_override else 0.0
+                )
+                total_costs = slippage_impact + gas_impact
 
-                print(
-                    f"  {i:2d}. {row.cycle} [{row.pair}]: "
-                    f"gross={row.gross_pct:+.2f}% {slip_str}{gas_str} net={row.net_pct:+.2f}%"
+                # Profit icon
+                profit_icon = (
+                    "✓" if row.net_pct >= self.config.threshold_net_pct else " "
                 )
 
-        # Why line if best doesn't meet threshold
-        if rows and rows[0].net_pct < self.config.threshold_net_pct:
-            best = rows[0]
-            delta = best.net_pct - self.config.threshold_net_pct
-            slip_str = f"slip={self.config.slippage_pct:.2f}%"
-            gas_str = ""
-            if self.config.gas_cost_usd_override:
-                gas_str = f" gas={self.config.gas_pct:.2f}%"
+                # Format cycle string (show first 3 tokens)
+                cycle_parts = row.cycle.split(" -> ")
+                if len(cycle_parts) >= 3:
+                    cycle_str = " → ".join(cycle_parts[:3])
+                else:
+                    cycle_str = " → ".join(cycle_parts)
 
+                print(
+                    f"   {profit_icon} {i:2d}. {cycle_str:25s} "
+                    f"Raw: {row.gross_pct:+.2f}%  "
+                    f"Costs: {total_costs:.2f}%  "
+                    f"Net: {row.net_pct:+.2f}%"
+                )
+
+        # Show why line if no profitable opportunities
+        if rows and len(opportunities) == 0:
+            best = rows[0]
+
+            # Calculate breakeven gross
+            slippage_impact = self.config.slippage_pct
+            gas_impact = (
+                self.config.gas_pct if self.config.gas_cost_usd_override else 0.0
+            )
+            breakeven_gross = (
+                self.config.threshold_net_pct + slippage_impact + gas_impact
+            )
+            gross_gap = breakeven_gross - best.gross_pct
+
+            print(f"\n   {'─' * 66}")
             print(
-                f"\n  ✗ why: best_net={best.net_pct:.2f}% (< thr by {delta:.2f}%), "
-                f"gross={best.gross_pct:+.2f}% – {slip_str}{gas_str}"
+                f"   ⚠️  No profitable opportunities found\n"
+                f"   Best route would lose {abs(best.net_pct):.2f}% (need {gross_gap:+.2f}% more to break even)\n"
+                f"   Breakdown: Raw profit {best.gross_pct:+.2f}% - "
+                f"Slippage {slippage_impact:.2f}% - "
+                f"Gas {gas_impact:.2f}%"
             )
 
-        # Footer with stats
-        above_thr = len(opportunities)
+        # Show summary footer
+        if len(opportunities) > 0:
+            print(f"\n   ✅ {len(opportunities)} PROFITABLE routes found!")
+        else:
+            print(f"\n   📊 Summary: Checked {len(rows)} routes, 0 profitable")
 
-        ema_str = ""
-        if self.ema_gross is not None:
-            ema_str = f"EMA15 g={self.ema_gross:+.2f}% n={self.ema_net:+.2f}% | "
-
-        cycles = len(rows)
-        size_str = f"${self.config.max_position_usd:.0f}"
-
-        hyp_pnl = 0.0
-        if rows:
-            hyp_pnl = rows[0].pnl_usd * above_thr
-
-        ev_scan = 0.0
-        if self.pnl_history:
-            ev_scan = sum(self.pnl_history) / len(self.pnl_history)
-
-        print(
-            f"\n  → {above_thr} above {self.config.threshold_net_pct:.2f}% threshold | "
-            f"{ema_str}cycles={cycles} | size≈{size_str} hyp_P&L=${hyp_pnl:.2f} | "
-            f"EV/scan=${ev_scan:.2f}"
+        # EV stats
+        ev_scan = (
+            sum(self.pnl_history) / len(self.pnl_history) if self.pnl_history else 0.0
         )
-        print("-" * 80)
+        if len(self.pnl_history) >= 10:
+            print(f"   📊 Expected value: ${ev_scan:+.2f}/scan")
+
+        print()
 
     def _print_opportunity(self, row: ArbRow, scan_num: int) -> None:
         """Print a single opportunity (for quiet mode)."""
@@ -597,8 +718,8 @@ class DexRunner:
                 rows = await self.scan_async()
                 self.print_results(rows, scan_num)
             except KeyboardInterrupt:
-                print("\n\n⏸ Interrupted by user")
-                sys.exit(0)
+                # Re-raise to be handled by main() signal handler
+                raise
             except Exception as e:
                 print(f"\n⚠ Scan {scan_num} failed: {e}")
                 if self.config.once:

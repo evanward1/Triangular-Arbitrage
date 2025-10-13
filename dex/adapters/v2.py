@@ -6,6 +6,7 @@ with fees embedded in the swap calculation.
 """
 
 import asyncio
+import time
 from decimal import Decimal
 from typing import Tuple
 
@@ -15,19 +16,22 @@ from web3.exceptions import Web3Exception
 from ..abi import UNISWAP_V2_PAIR_ABI
 
 
-def fetch_pool(web3: Web3, pair_addr: str) -> Tuple[str, str, Decimal, Decimal]:
+def fetch_pool(
+    web3: Web3, pair_addr: str, max_retries: int = 3
+) -> Tuple[str, str, Decimal, Decimal]:
     """
     Fetch token addresses and reserves from a Uniswap V2 style pair.
 
     Args:
         web3: Web3 instance connected to the chain
         pair_addr: Checksummed address of the pair contract
+        max_retries: Maximum number of retry attempts (default: 3)
 
     Returns:
         Tuple of (token0_addr, token1_addr, reserve0, reserve1)
 
     Raises:
-        Web3Exception: If RPC calls fail
+        Web3Exception: If RPC calls fail after all retries
         ValueError: If pair address is invalid
     """
     if not Web3.is_checksum_address(pair_addr):
@@ -35,22 +39,38 @@ def fetch_pool(web3: Web3, pair_addr: str) -> Tuple[str, str, Decimal, Decimal]:
 
     pair = web3.eth.contract(address=pair_addr, abi=UNISWAP_V2_PAIR_ABI)
 
-    try:
-        token0 = pair.functions.token0().call()
-        token1 = pair.functions.token1().call()
-        reserves = pair.functions.getReserves().call()
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            token0 = pair.functions.token0().call()
+            token1 = pair.functions.token1().call()
+            reserves = pair.functions.getReserves().call()
 
-        r0 = Decimal(reserves[0])
-        r1 = Decimal(reserves[1])
+            r0 = Decimal(reserves[0])
+            r1 = Decimal(reserves[1])
 
-        return (
-            Web3.to_checksum_address(token0),
-            Web3.to_checksum_address(token1),
-            r0,
-            r1,
-        )
-    except Exception as e:
-        raise Web3Exception(f"Failed to fetch pool {pair_addr}: {e}") from e
+            return (
+                Web3.to_checksum_address(token0),
+                Web3.to_checksum_address(token1),
+                r0,
+                r1,
+            )
+        except Exception as e:
+            last_error = e
+            # Check if it's a rate limit error
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 1s, 2s, 4s
+                    wait_time = 2**attempt
+                    time.sleep(wait_time)
+                    continue
+            # For non-rate-limit errors, fail immediately
+            raise Web3Exception(f"Failed to fetch pool {pair_addr}: {e}") from e
+
+    # If we exhausted retries
+    raise Web3Exception(
+        f"Failed to fetch pool {pair_addr} after {max_retries} retries: {last_error}"
+    ) from last_error
 
 
 async def fetch_pool_async(

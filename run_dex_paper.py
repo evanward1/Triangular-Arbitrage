@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import asyncio
+import signal
 import sys
 from pathlib import Path
 
@@ -100,19 +101,31 @@ async def main_async() -> int:
     # Run scanner with async (20-40x faster reserve fetching)
     try:
         await runner.run_async()
+        return 0
     except KeyboardInterrupt:
-        print("\n\n⏸ Stopped by user")
+        # Signal handler will print message, don't duplicate
         return 0
     except Exception as e:
         print(f"❌ Runner failed: {e}", file=sys.stderr)
         return 1
 
-    return 0
-
 
 def main() -> int:
     """Synchronous wrapper for async main."""
-    return asyncio.run(main_async())
+
+    # Set up signal handler for clean Ctrl-C exit
+    def signal_handler(sig, frame):
+        print("\n\n⏸  Stopped by user")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+
+    try:
+        return asyncio.run(main_async())
+    except KeyboardInterrupt:
+        # Shouldn't reach here due to signal handler, but just in case
+        print("\n\n⏸  Stopped by user")
+        return 0
 
 
 if __name__ == "__main__":

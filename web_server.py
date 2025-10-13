@@ -140,9 +140,12 @@ class StateManager:
         """Parse log messages to extract opportunities and trades"""
         import re
 
-        # Parse opportunities: "1. USDT -> RVN -> USD: gross=+0.46% fees=0.30% net=+0.11%"
+        # Parse opportunities: "1. USDT -> RVN -> USD: profit before costs=+0.46%
+        # trading fees=0.30% final profit=+0.11%"
         opp_match = re.match(
-            r"\d+\.\s+(.+?):\s+gross=\+?([-\d.]+)%.*?net=\+?([-\d.]+)%", message
+            r"\d+\.\s+(.+?):\s+profit before costs=\+?([-\d.]+)%"
+            r".*?final profit=\+?([-\d.]+)%",
+            message,
         )
         if opp_match:
             cycle_str = opp_match.group(1)
