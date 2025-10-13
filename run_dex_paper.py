@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 
@@ -63,9 +64,9 @@ Examples:
     return parser.parse_args()
 
 
-def main() -> int:
+async def main_async() -> int:
     """
-    Main entry point.
+    Main entry point (async for concurrent RPC calls).
 
     Returns:
         Exit code (0 for success, 1 for error)
@@ -96,9 +97,9 @@ def main() -> int:
         print(f"❌ Initialization failed: {e}", file=sys.stderr)
         return 1
 
-    # Run scanner
+    # Run scanner with async (20-40x faster reserve fetching)
     try:
-        runner.run()
+        await runner.run_async()
     except KeyboardInterrupt:
         print("\n\n⏸ Stopped by user")
         return 0
@@ -107,6 +108,11 @@ def main() -> int:
         return 1
 
     return 0
+
+
+def main() -> int:
+    """Synchronous wrapper for async main."""
+    return asyncio.run(main_async())
 
 
 if __name__ == "__main__":

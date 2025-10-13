@@ -5,6 +5,7 @@ Implements reserve fetching and swap simulation using the x*y=k formula
 with fees embedded in the swap calculation.
 """
 
+import asyncio
 from decimal import Decimal
 from typing import Tuple
 
@@ -50,6 +51,29 @@ def fetch_pool(web3: Web3, pair_addr: str) -> Tuple[str, str, Decimal, Decimal]:
         )
     except Exception as e:
         raise Web3Exception(f"Failed to fetch pool {pair_addr}: {e}") from e
+
+
+async def fetch_pool_async(
+    web3: Web3, pair_addr: str
+) -> Tuple[str, str, Decimal, Decimal]:
+    """
+    Async version: Fetch token addresses and reserves from a Uniswap V2 style pair.
+
+    Runs the synchronous RPC calls in a thread pool to avoid blocking the event loop.
+
+    Args:
+        web3: Web3 instance connected to the chain
+        pair_addr: Checksummed address of the pair contract
+
+    Returns:
+        Tuple of (token0_addr, token1_addr, reserve0, reserve1)
+
+    Raises:
+        Web3Exception: If RPC calls fail
+        ValueError: If pair address is invalid
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, fetch_pool, web3, pair_addr)
 
 
 def swap_out(

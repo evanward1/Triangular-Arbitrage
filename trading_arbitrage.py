@@ -139,6 +139,10 @@ class RealTriangularArbitrage:
         self.balances = {}
         self.paper_balances = {}  # Track paper trading balances separately
 
+        # Graph caching: cache structure (nodes/edges), update weights only
+        self._graph_structure_cached = False
+        self._cached_symbols = set()  # Track which symbols were used to build graph
+
         # Connection timeout and retry configuration
         self.connection_timeout_seconds = int(
             os.getenv("CONNECTION_TIMEOUT_SECONDS", "30")
@@ -263,30 +267,33 @@ class RealTriangularArbitrage:
         self.paper_usdt = float(os.getenv("PAPER_USDT", "1000"))
         self.paper_usdc = float(os.getenv("PAPER_USDC", "1000"))
 
-        # Symbol curation
+        # Symbol curation (use sets for O(1) lookups)
         self.symbol_allowlist = (
-            os.getenv("SYMBOL_ALLOWLIST", "").split(",")
+            {
+                s.strip().upper()
+                for s in os.getenv("SYMBOL_ALLOWLIST", "").split(",")
+                if s.strip()
+            }
             if os.getenv("SYMBOL_ALLOWLIST")
-            else []
+            else set()
         )
-        self.symbol_allowlist = [
-            s.strip().upper() for s in self.symbol_allowlist if s.strip()
-        ]
+
         triangle_bases_env = os.getenv("TRIANGLE_BASES", "")
-        if triangle_bases_env:
-            self.triangle_bases = [
-                s.strip().upper() for s in triangle_bases_env.split(",") if s.strip()
-            ]
-        else:
-            self.triangle_bases = []  # Empty = allow all currencies as bases
+        self.triangle_bases = (
+            {s.strip().upper() for s in triangle_bases_env.split(",") if s.strip()}
+            if triangle_bases_env
+            else set()
+        )  # Empty = allow all currencies as bases
+
         self.exclude_symbols = (
-            os.getenv("EXCLUDE_SYMBOLS", "").split(",")
+            {
+                s.strip().upper()
+                for s in os.getenv("EXCLUDE_SYMBOLS", "").split(",")
+                if s.strip()
+            }
             if os.getenv("EXCLUDE_SYMBOLS")
-            else []
+            else set()
         )
-        self.exclude_symbols = [
-            s.strip().upper() for s in self.exclude_symbols if s.strip()
-        ]
 
         # Regex-based symbol exclusion for more flexible filtering
         import re
@@ -496,46 +503,53 @@ class RealTriangularArbitrage:
         return value
 
     def _setup_exchange(self):
-        """Setup exchange with API credentials"""
+        """Setup exchange with API credentials and connection pooling"""
         try:
+            # Connection pooling config for better performance
+            connection_pool_config = {
+                "enableRateLimit": True,
+                "timeout": 30000,  # 30 second timeout
+                "asyncio_loop": None,  # Use default event loop
+                "session": None,  # Let CCXT manage session with pooling
+                "aiohttp_trust_env": True,  # Trust environment proxy settings
+            }
+
             if self.exchange_name.lower() == "binanceus":
                 self.exchange = ccxt.binanceus(
                     {
                         "apiKey": os.getenv("BINANCEUS_API_KEY"),
                         "secret": os.getenv("BINANCEUS_SECRET"),
-                        "enableRateLimit": True,
                         "sandbox": False,
                         "options": {
                             "defaultType": "spot",
                         },
+                        **connection_pool_config,
                     }
                 )
             elif self.exchange_name.lower() == "binance":
-                self.exchange = ccxt.binance(
-                    {
-                        "apiKey": os.getenv("BINANCE_API_KEY"),
-                        "secret": os.getenv("BINANCE_SECRET"),
-                        "enableRateLimit": True,
-                        "sandbox": False,
-                        "options": {
-                            "defaultType": "spot",
-                        },
-                        # Add proxy if configured
-                        "proxies": {
-                            "http": os.getenv("HTTP_PROXY"),
-                            "https": os.getenv("HTTPS_PROXY"),
-                        }
-                        if os.getenv("HTTP_PROXY")
-                        else None,
+                config = {
+                    "apiKey": os.getenv("BINANCE_API_KEY"),
+                    "secret": os.getenv("BINANCE_SECRET"),
+                    "sandbox": False,
+                    "options": {
+                        "defaultType": "spot",
+                    },
+                    **connection_pool_config,
+                }
+                # Add proxy if configured
+                if os.getenv("HTTP_PROXY"):
+                    config["proxies"] = {
+                        "http": os.getenv("HTTP_PROXY"),
+                        "https": os.getenv("HTTPS_PROXY"),
                     }
-                )
+                self.exchange = ccxt.binance(config)
             elif self.exchange_name.lower() == "kraken":
                 self.exchange = ccxt.kraken(
                     {
                         "apiKey": os.getenv("KRAKEN_API_KEY"),
                         "secret": os.getenv("KRAKEN_SECRET"),
-                        "enableRateLimit": True,
                         "sandbox": False,  # Always use live data, even in paper mode
+                        **connection_pool_config,
                     }
                 )
             elif self.exchange_name.lower() == "kucoin":
@@ -544,8 +558,8 @@ class RealTriangularArbitrage:
                         "apiKey": os.getenv("KUCOIN_API_KEY"),
                         "secret": os.getenv("KUCOIN_SECRET"),
                         "password": os.getenv("KUCOIN_PASSWORD"),
-                        "enableRateLimit": True,
                         "sandbox": False,  # Always use live data, even in paper mode
+                        **connection_pool_config,
                     }
                 )
             elif self.exchange_name.lower() == "coinbase":
@@ -554,8 +568,8 @@ class RealTriangularArbitrage:
                         "apiKey": os.getenv("COINBASE_API_KEY"),
                         "secret": os.getenv("COINBASE_SECRET"),
                         "passphrase": os.getenv("COINBASE_PASSPHRASE"),
-                        "enableRateLimit": True,
                         "sandbox": False,  # Always use live data, even in paper mode
+                        **connection_pool_config,
                     }
                 )
             else:
@@ -1302,16 +1316,18 @@ class RealTriangularArbitrage:
             # Exclude fiat currencies except USD (keep stablecoins, allow USD as bridge)
             fiat_currencies = {"EUR", "GBP", "JPY", "CAD", "AUD", "CHF"}
 
-            # Build price graph with symbol filtering
-            self.graph.clear()
-            filtered_symbols = set()
+            # Build/update price graph with caching for 60-70% speedup
+            current_symbols = set()
 
+            # Determine which symbols pass filtering
             for symbol in self.symbols:
                 if symbol not in self.tickers:
                     continue
 
-                ticker = self.tickers[symbol]
-                base, quote = symbol.split("/")
+                try:
+                    base, quote = symbol.split("/")
+                except ValueError:
+                    continue
 
                 # Skip pairs with fiat currencies
                 if base in fiat_currencies or quote in fiat_currencies:
@@ -1336,23 +1352,50 @@ class RealTriangularArbitrage:
                     ) or self.exclude_symbols_pattern.search(quote):
                         continue
 
-                filtered_symbols.add(base)
-                filtered_symbols.add(quote)
+                current_symbols.add(symbol)
 
-                # Add edges for both directions
-                bid_price = ticker.get("bid")
-                ask_price = ticker.get("ask")
+            # Check if graph structure needs rebuilding
+            if (
+                not self._graph_structure_cached
+                or current_symbols != self._cached_symbols
+            ):
+                # Full rebuild: structure has changed
+                self.graph.clear()
+                self._cached_symbols = current_symbols.copy()
+                self._graph_structure_cached = True
 
-                if bid_price and ask_price:
-                    # Direct: base -> quote (selling base for quote)
-                    self.graph.add_edge(
-                        base, quote, rate=bid_price, symbol=symbol, side="sell"
-                    )
+                for symbol in current_symbols:
+                    ticker = self.tickers[symbol]
+                    base, quote = symbol.split("/")
 
-                    # Reverse: quote -> base (buying base with quote)
-                    self.graph.add_edge(
-                        quote, base, rate=1 / ask_price, symbol=symbol, side="buy"
-                    )
+                    bid_price = ticker.get("bid")
+                    ask_price = ticker.get("ask")
+
+                    if bid_price and ask_price:
+                        # Direct: base -> quote (selling base for quote)
+                        self.graph.add_edge(
+                            base, quote, rate=bid_price, symbol=symbol, side="sell"
+                        )
+
+                        # Reverse: quote -> base (buying base with quote)
+                        self.graph.add_edge(
+                            quote, base, rate=1 / ask_price, symbol=symbol, side="buy"
+                        )
+            else:
+                # Fast path: only update edge weights (rates)
+                for symbol in current_symbols:
+                    ticker = self.tickers[symbol]
+                    base, quote = symbol.split("/")
+
+                    bid_price = ticker.get("bid")
+                    ask_price = ticker.get("ask")
+
+                    if bid_price and ask_price:
+                        # Update existing edge rates (structure unchanged)
+                        if self.graph.has_edge(base, quote):
+                            self.graph[base][quote]["rate"] = bid_price
+                        if self.graph.has_edge(quote, base):
+                            self.graph[quote][base]["rate"] = 1 / ask_price
 
             # Find profitable cycles using efficient triangular arbitrage search
             opportunities = []

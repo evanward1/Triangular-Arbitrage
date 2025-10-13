@@ -446,8 +446,9 @@ class TestMockDexRunner:
         dex_state.scan_interval_sec = 0.5  # Speed up for testing
 
         # Run scanner for enough time to generate fills
+        # Opportunities generated every 3rd scan, need at least 2 opps = 6 scans = 3s
         task = asyncio.create_task(run_dex_scanner())
-        await asyncio.sleep(4)
+        await asyncio.sleep(3.5)  # Give enough time for 6+ scans
 
         # Stop scanner
         dex_state.running = False
@@ -457,7 +458,7 @@ class TestMockDexRunner:
         except asyncio.CancelledError:
             pass
 
-        # Should have generated some fills (every 6th scan)
+        # Should have generated some fills (opportunities on scans 3, 6+)
         assert len(dex_state.fills) > 0
 
     @pytest.mark.asyncio
