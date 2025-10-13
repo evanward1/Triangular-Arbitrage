@@ -103,7 +103,10 @@ def run_cex(args):
         mode = "paper" if args.paper else "live"
 
         if mode == "live":
-            print("⚠️  CEX LIVE TRADING MODE - Using real money!")
+            print("\n" + "⚠️ " * 20)
+            print("  LIVE TRADING MODE - REAL MONEY AT RISK!")
+            print("⚠️ " * 20 + "\n")
+
             # Check API keys
             kraken_key = os.getenv("KRAKEN_API_KEY")
             binance_key = os.getenv("BINANCE_API_KEY")
@@ -111,30 +114,38 @@ def run_cex(args):
 
             if not any([kraken_key, binance_key, coinbase_key]):
                 print("❌ No API keys found!")
-                print("Please set up your API keys in .env file first.")
+                print("   Please set up your API keys in .env file first.")
                 return 1
 
-            confirmation = input("⚠️  Type 'YES' to proceed with LIVE trading: ")
+            confirmation = input(
+                "⚠️  Type 'YES' in CAPS to proceed with LIVE trading: "
+            )
             if confirmation != "YES":
-                print("❌ Trading cancelled for safety")
+                print("✅ Trading cancelled for safety")
                 return 0
 
-        print(f"🚀 Starting CEX {mode.upper()} trading...")
+        mode_icon = "📝" if mode == "paper" else "💰"
+        print(f"\n{mode_icon} Starting {mode.upper()} trading mode...\n")
 
         # Run the trading session
         async def run_session():
             exchanges_to_try = ["binanceus", "kraken", "kucoin", "coinbase"]
             for exchange_name in exchanges_to_try:
-                print(f"🔄 Trying {exchange_name}...")
+                print(f"🔄 Connecting to {exchange_name.upper()}...")
                 try:
                     trader = RealTriangularArbitrage(exchange_name, mode)
                     await trader.run_trading_session()
                     break
                 except Exception as e:
-                    print(f"❌ {exchange_name} failed: {e}")
+                    print(f"❌ {exchange_name.upper()} connection failed: {e}")
+                    print("   Trying next exchange...\n")
                     continue
 
-        asyncio.run(run_session())
+        try:
+            asyncio.run(run_session())
+        except KeyboardInterrupt:
+            print("\n\n✋ Stopped by user")
+            print("📊 Session ended gracefully")
         return 0
 
     except ImportError:
@@ -188,11 +199,15 @@ def build_parser():
 
 def interactive_menu():
     """Show interactive menu for mode selection."""
-    print("\n=== Unified Arbitrage Runner ===")
-    print("1) CEX  (paper)")
-    print("2) CEX  (live)")
-    print("3) DEX  (paper)")
-    print("4) DEX  (live)")
+    print("\n" + "=" * 70)
+    print("🤖  ARBITRAGE TRADING BOT")
+    print("=" * 70)
+    print("\nSelect Trading Mode:\n")
+    print("  1) 📝 CEX Paper Trading  (practice with simulated money)")
+    print("  2) 💰 CEX Live Trading   (real money - requires API keys)")
+    print("  3) 📝 DEX Paper Trading  (practice with DeFi arbitrage)")
+    print("  4) 💰 DEX Live Trading   (real money on blockchain)")
+    print("\n" + "-" * 70)
     choice = input("Choose [1-4]: ").strip()
     if choice == "1":
         return run_cex(argparse.Namespace(paper=True, live=False))

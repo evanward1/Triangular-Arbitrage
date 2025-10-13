@@ -23,6 +23,7 @@ from triangular_arbitrage.execution_helpers import (
     depth_limited_size,
     leg_timed,
 )
+from triangular_arbitrage.validation.breakeven import BreakevenGuard, LegInfo
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -245,6 +246,11 @@ class RealTriangularArbitrage:
         # Initialize SlippageMonitor for chronic offender detection
         slippage_monitor_window = int(os.getenv("SLIPPAGE_MONITOR_WINDOW", "20"))
         self.slippage_monitor = SlippageMonitor(window=slippage_monitor_window)
+
+        # Initialize BreakevenGuard for profitability validation
+        self.breakeven_guard = BreakevenGuard(
+            max_leg_latency_ms=self.max_leg_latency_ms
+        )
 
         # Near-miss detection
         self.near_miss_bps = (
@@ -1235,6 +1241,10 @@ class RealTriangularArbitrage:
                         "symbol": info["symbol"],
                         "side": info["side"].upper(),
                         "slippage_pct": leg_slippage_pct,
+                        "price_used": vwap,
+                        "price_source": "ask" if info["side"] == "buy" else "bid",
+                        "vwap": vwap,
+                        "best_price": best_price,
                     }
                 )
 
@@ -1828,20 +1838,21 @@ class RealTriangularArbitrage:
 
     def print_summary(self):
         """Print compact session summary"""
-        print("\n" + "=" * 60)
-        print("SESSION SUMMARY")
-        print("=" * 60)
+        print("\n" + "=" * 70)
+        print("📊 SESSION SUMMARY")
+        print("=" * 70)
 
         # Execution stats
-        print(f"Attempts:         {self.execution_stats['attempts']}")
-        print(f"Full fills:       {self.execution_stats['full_fills']}")
-        print(f"Partial fills:    {self.execution_stats['partial_fills']}")
-        print(f"Cancels:          {self.execution_stats['cancels']}")
-        print(f"Depth rejects:    {self.execution_stats['depth_rejects']}")
-        print(f"Slippage rejects: {self.execution_stats['slippage_rejects']}")
-        print(f"Timeouts:         {self.execution_stats['timeouts']}")
-        print(f"Maker used:       {self.execution_stats['maker_used_count']}")
-        print(f"Maker fallbacks:  {self.execution_stats['maker_to_taker_fallbacks']}")
+        print("\n🔄 EXECUTION STATS")
+        print(f"  Attempts:         {self.execution_stats['attempts']}")
+        print(f"  Full fills:       {self.execution_stats['full_fills']}")
+        print(f"  Partial fills:    {self.execution_stats['partial_fills']}")
+        print(f"  Cancels:          {self.execution_stats['cancels']}")
+        print(f"  Depth rejects:    {self.execution_stats['depth_rejects']}")
+        print(f"  Slippage rejects: {self.execution_stats['slippage_rejects']}")
+        print(f"  Timeouts:         {self.execution_stats['timeouts']}")
+        print(f"  Maker used:       {self.execution_stats['maker_used_count']}")
+        print(f"  Maker fallbacks:  {self.execution_stats['maker_to_taker_fallbacks']}")
 
         # Trade metrics
         if self.trade_history:
@@ -1857,9 +1868,10 @@ class RealTriangularArbitrage:
 
                 median_lat = statistics.median(all_latencies)
 
-                print(f"\nFilled trades:    {len(self.trade_history)}")
-                print(f"Avg net edge:     {avg_net:+.3f}%")
-                print(f"Median leg lat:   {median_lat:.0f}ms")
+                print("\n📈 TRADE METRICS")
+                print(f"  Filled trades:    {len(self.trade_history)}")
+                print(f"  Avg net edge:     {avg_net:+.3f}%")
+                print(f"  Median leg lat:   {median_lat:.0f}ms")
 
                 # Maker usage rate
                 maker_legs = sum(
@@ -1868,10 +1880,10 @@ class RealTriangularArbitrage:
                 total_legs = len(self.trade_history) * 3
                 if total_legs > 0:
                     maker_rate = (maker_legs / total_legs) * 100
-                    print(f"Maker usage:      {maker_rate:.1f}%")
+                    print(f"  Maker usage:      {maker_rate:.1f}%")
 
         # USD P&L section
-        print("\nDOLLARS")
+        print("\n💰 PROFIT & LOSS")
         print(f"  Realized P&L:   ${self.realized_pnl_usd:+.2f}")
         avg_hyp = (
             (self.hyp_best_pnl_usd_sum / self.hyp_best_count)
@@ -1902,28 +1914,28 @@ class RealTriangularArbitrage:
                 + self.reject_by_depth
             )
             if total_rejects > 0:
-                print(
-                    f"\nREASONS (scans): threshold={self.reject_by_threshold}, "
-                    f"fees={self.reject_by_fees}, slip={self.reject_by_slip}, "
-                    f"depth={self.reject_by_depth}"
-                )
+                print("\n🚫 REJECTION REASONS")
+                print(f"  Threshold:  {self.reject_by_threshold}")
+                print(f"  Fees:       {self.reject_by_fees}")
+                print(f"  Slippage:   {self.reject_by_slip}")
+                print(f"  Depth:      {self.reject_by_depth}")
 
                 # Find primary blocker
                 reasons = {
                     "threshold": self.reject_by_threshold,
                     "fees": self.reject_by_fees,
-                    "slip": self.reject_by_slip,
+                    "slippage": self.reject_by_slip,
                     "depth": self.reject_by_depth,
                 }
                 primary_blocker = max(reasons, key=reasons.get)
-                print(f"primary blocker: {primary_blocker}")
+                print(f"  Primary blocker: {primary_blocker}")
 
                 # If no fills, add message
                 if self.execution_stats["full_fills"] == 0:
-                    print(f"No fills this session. Primary blocker: {primary_blocker}.")
+                    print(f"  → No fills this session due to {primary_blocker}")
 
         # Money summary
-        print("\nMONEY SUMMARY")
+        print("\n💵 EQUITY SUMMARY")
         end_eq = (
             self.last_equity_usd
             if self.last_equity_usd is not None
@@ -1956,22 +1968,25 @@ class RealTriangularArbitrage:
                     mdd = dd
             print(f"  Max drawdown:   {mdd*100:.2f}%")
 
-        print("=" * 60)
+        print("=" * 70)
 
     async def run_trading_session(self, max_trades: int = None):
         """Run continuous automated arbitrage trading session"""
-        fee_source_label = f"(source: {self.fee_source_actual})"
-        fee_mix_desc = (
-            "(mix: m/t/m planned)" if self.maker_fee != self.taker_fee else ""
+        print("\n" + "=" * 70)
+        print(f"🏦  CONNECTED TO {self.exchange_name.upper()}")
+        print("=" * 70)
+
+        mode_label = (
+            "📝 PAPER TRADING" if self.trading_mode == "paper" else "💰 LIVE TRADING"
         )
+        print(f"\n{mode_label}")
         print(
-            f"🏦 {self.exchange_name.upper()} | "
-            f"Fees: {self.maker_fee*100:.2f}%m/{self.taker_fee*100:.2f}%t "
-            f"{fee_source_label} {fee_mix_desc}| Mode: {self.trading_mode}"
+            f"Trading Fees: {self.maker_fee*100:.2f}% maker / {self.taker_fee*100:.2f}% taker"
         )
+
         if self.run_min > 0:
-            print(f"⏱️  Timeboxed: {self.run_min} min")
-        print("💡 Press Ctrl+C to stop\n")
+            print(f"Time Limit: {self.run_min} minutes")
+        print("\n💡 TIP: Press Ctrl+C to stop gracefully\n")
 
         await self.fetch_balances()
 
@@ -1983,8 +1998,7 @@ class RealTriangularArbitrage:
         self.last_equity_usd = self.start_equity_usd
         self.equity_curve.append((time.time(), self.start_equity_usd))
         print(
-            f"🏁 Start equity: ${self.start_equity_usd:,.{self.equity_precision}f} "
-            f"(priced {priced}, unpriced {unpriced})\n"
+            f"💵 Starting Balance: ${self.start_equity_usd:,.{self.equity_precision}f}\n"
         )
 
         # Load markets to get universe stats
@@ -2046,10 +2060,14 @@ class RealTriangularArbitrage:
             else 0
         )
 
-        bases_str = ",".join(self.triangle_bases) if self.triangle_bases else "any"
-        print(
-            f"🌐 Universe: {n_symbols} symbols, ~{approx_triangles} triangles (bases: {bases_str})\n"
+        bases_str = (
+            ",".join(self.triangle_bases) if self.triangle_bases else "all currencies"
         )
+        print("🔍 Scanning Market")
+        print(f"   • {n_symbols} trading pairs available")
+        print(f"   • ~{approx_triangles:,} possible arbitrage routes")
+        print(f"   • Base currencies: {bases_str}")
+        print(f"\n{'─' * 70}\n")
 
         trade_num = 0
         start_time = time.time()
@@ -2058,7 +2076,7 @@ class RealTriangularArbitrage:
                 # Check timebox
                 elapsed_min = (time.time() - start_time) / 60
                 if self.run_min > 0 and elapsed_min >= self.run_min:
-                    print(f"\n⏱️  Timebox reached ({elapsed_min:.1f} min)")
+                    print(f"\n⏱️  Time limit reached ({elapsed_min:.1f} minutes)")
                     break
 
                 trade_num += 1
@@ -2066,13 +2084,12 @@ class RealTriangularArbitrage:
                 # Show timebox ETA if applicable
                 if self.run_min > 0:
                     print(
-                        f"🔍 Scan {trade_num} | ⏱ timeboxed {self.run_min}m | "
-                        f"elapsed {elapsed_min:.1f}m | scans {trade_num}",
-                        end=" ",
+                        f"🔄 Scan #{trade_num} (running for {elapsed_min:.1f}/{self.run_min} min) ",
+                        end="",
                         flush=True,
                     )
                 else:
-                    print(f"🔍 Scan {trade_num}", end=" ", flush=True)
+                    print(f"🔄 Scan #{trade_num} ", end="", flush=True)
 
                 opportunities = await self.find_arbitrage_opportunities()
 
@@ -2125,20 +2142,24 @@ class RealTriangularArbitrage:
 
                 # Determine if we should print detailed output
                 def should_print():
-                    if not self.dedupe or best is None:
-                        return True
-                    if self._last_key is None:
-                        return True
-                    # print if cycle changed
-                    if key != self._last_key:
-                        return True
-                    # print if net moved by >= CHANGE_BPS (in %)
-                    if abs(net - self._last_net) >= (self.change_bps / 100):
-                        return True
-                    # heartbeat
-                    if (trade_num % self.print_every_n) == 0:
-                        return True
-                    return False
+                    # Always print every scan for user-friendly experience
+                    return True
+
+                    # Old deduplication logic (kept for reference):
+                    # if not self.dedupe or best is None:
+                    #     return True
+                    # if self._last_key is None:
+                    #     return True
+                    # # print if cycle changed
+                    # if key != self._last_key:
+                    #     return True
+                    # # print if net moved by >= CHANGE_BPS (in %)
+                    # if abs(net - self._last_net) >= (self.change_bps / 100):
+                    #     return True
+                    # # heartbeat
+                    # if (trade_num % self.print_every_n) == 0:
+                    #     return True
+                    # return False
 
                 # Calculate execution size for USD P&L (do this before should_print so it's available for all scans)
                 size_usd = self.max_position_size  # Default hypothetical
@@ -2175,12 +2196,12 @@ class RealTriangularArbitrage:
                         )
                         # Sanity check: breakeven should be positive and reasonable (<100%)
                         if 0 < breakeven_gross < 100:
-                            breakeven_str = f" (need gross≥{breakeven_gross:.2f}%)"
+                            breakeven_str = (
+                                f" (need profit before costs ≥{breakeven_gross:.2f}%)"
+                            )
                         else:
-                            breakeven_str = ""
                             breakeven_gross = 0  # Fallback
                     except Exception:
-                        breakeven_str = ""
                         breakeven_gross = 0  # Fallback
 
                     # Calculate USD P&L and EV
@@ -2211,20 +2232,29 @@ class RealTriangularArbitrage:
 
                     # Print detailed scan output
                     if all_cycles and self.verbosity != "quiet":
-                        print()
+                        print("\n")
+                        print(f"   {'Top Arbitrage Routes Found':^66}")
+                        print(f"   {'─' * 66}")
                         topn = min(self.topn, len(all_cycles))
                         for i, opp in enumerate(all_cycles[:topn], 1):
-                            cycle_str = " -> ".join(opp["cycle"][:3])
+                            cycle_str = " → ".join(opp["cycle"][:3])
                             # Clamp values for display
                             gross_display = self._clamp_for_display(
                                 opp["gross_profit_pct"]
                             )
                             net_display = self._clamp_for_display(opp["net_profit_pct"])
+
+                            # Color code based on profitability
+                            if net_display >= 0:
+                                profit_icon = "✓"
+                            else:
+                                profit_icon = " "
+
                             print(
-                                f"  {i}. {cycle_str}: "
-                                f"gross={gross_display:+.2f}% "
-                                f"fees={opp['fee_cost_pct']:.2f}% "
-                                f"net={net_display:+.2f}%"
+                                f"   {profit_icon} {i:2d}. {cycle_str:25s} "
+                                f"Raw: {gross_display:+.2f}%  "
+                                f"Fees: {opp['fee_cost_pct']:.2f}%  "
+                                f"Net: {net_display:+.2f}%"
                             )
 
                         # Show why line if 0 opportunities above threshold
@@ -2240,7 +2270,9 @@ class RealTriangularArbitrage:
                                     gross_gap = (
                                         breakeven_gross - best_opp["gross_profit_pct"]
                                     )
-                                    gap_str = f"(need {gross_gap:+.2f}% more) – "
+                                    gap_str = (
+                                        f" (need {gross_gap:+.2f}% more to break even)"
+                                    )
                                 else:
                                     gap_str = ""
 
@@ -2252,13 +2284,13 @@ class RealTriangularArbitrage:
                                     best_opp["gross_profit_pct"]
                                 )
 
+                                print(f"\n   {'─' * 66}")
                                 print(
-                                    f"  ✗ why: best_net={net_display:+.2f}% "
-                                    f"(< thr by {shortfall:.2f}%), "
-                                    f"gross={gross_display:+.2f}% "
-                                    f"{gap_str}"
-                                    f"fees={best_opp['fee_cost_pct']:.2f}% – "
-                                    f"slip={best_opp['slippage_pct']:.2f}%"
+                                    f"   ⚠️  No profitable opportunities found\n"
+                                    f"   Best route would lose {abs(net_display):.2f}%{gap_str}\n"
+                                    f"   Breakdown: Raw profit {gross_display:+.2f}% - "
+                                    f"Fees {best_opp['fee_cost_pct']:.2f}% - "
+                                    f"Slippage {best_opp['slippage_pct']:.2f}%"
                                 )
                             except Exception as e:
                                 logger.debug(f"Error formatting why line: {e}")
@@ -2285,32 +2317,33 @@ class RealTriangularArbitrage:
                             if 0 < shortfall <= self.near_miss_bps:
                                 gap = shortfall
                                 print(
-                                    f"  ⚑ near-miss: best_net={best_opp['net_profit_pct']:+.2f}% "
-                                    f"(short {gap:.2f}%), "
-                                    f"gross={best_opp['gross_profit_pct']:+.2f}% – "
-                                    f"fees={best_opp['fee_cost_pct']:.2f}% – "
-                                    f"slip={best_opp['slippage_pct']:.2f}%"
+                                    f"  ⚑ Almost profitable: final profit={best_opp['net_profit_pct']:+.2f}% "
+                                    f"(short by {gap:.2f}%), "
+                                    f"profit before costs={best_opp['gross_profit_pct']:+.2f}% – "
+                                    f"trading fees={best_opp['fee_cost_pct']:.2f}% – "
+                                    f"price slippage={best_opp['slippage_pct']:.2f}%"
                                 )
                                 # Log to CSV
                                 os.makedirs("logs", exist_ok=True)
                                 self._log_near_miss_to_csv(trade_num, best_opp)
 
                         # Show threshold with breakeven (already calculated above)
-                        print(
-                            f"  → {len(opportunities)} above {self.min_profit_threshold}% threshold{breakeven_str}",
-                            end="",
-                        )
+                        if len(opportunities) > 0:
+                            print(
+                                f"\n   ✅ {len(opportunities)} PROFITABLE routes found!"
+                            )
+                        else:
+                            print(
+                                f"\n   📊 Summary: Checked {len(all_cycles)} routes, 0 profitable"
+                            )
 
                         # Show EMA stats and scan metrics if available
                         if self.ema_gross is not None and self.verbosity in [
                             "normal",
                             "debug",
                         ]:
-                            # Calculate filtered triangle count
-                            total_cycles = len(all_cycles)
                             print(
-                                f" | EMA15 g={self.ema_gross:.2f}% n={self.ema_net:.2f}% | "
-                                f"cycles={total_cycles}",
+                                f"   📈 15-scan average: Raw {self.ema_gross:.2f}%, Net {self.ema_net:.2f}%",
                                 end="",
                             )
 
@@ -2332,17 +2365,23 @@ class RealTriangularArbitrage:
 
                             delta_parts = []
                             if delta_net is not None:
-                                delta_parts.append(f"Δnet={delta_net:+.02f}%")
+                                delta_parts.append(
+                                    f"change in final profit={delta_net:+.02f}%"
+                                )
                             if delta_gross is not None:
-                                delta_parts.append(f"Δgross={delta_gross:+.02f}%")
+                                delta_parts.append(
+                                    f"change before costs={delta_gross:+.02f}%"
+                                )
 
                             if delta_parts:
                                 print(f" | {' '.join(delta_parts)}", end="")
 
                         # Show USD P&L and EV
                         if self.show_usd and best is not None:
+                            pnl_icon = "💰" if best_pnl_usd >= 0 else "💸"
                             print(
-                                f" | size≈${size_usd:.0f}{size_label} hyp_P&L=${best_pnl_usd:+.2f}",
+                                f"\n   {pnl_icon} Trade: ${size_usd:.0f}{size_label} → "
+                                f"Expected P&L: ${best_pnl_usd:+.2f}",
                                 end="",
                             )
 
@@ -2366,27 +2405,34 @@ class RealTriangularArbitrage:
                                     # Only print EV per day after at least 10 scans for stability
                                     if self._ev_scan_count >= 10:
                                         print(
-                                            f" | EV/scan=${ev_scan:+.2f} EV/day=${ev_day:+.0f}",
+                                            f"\n   📊 Expected value: ${ev_scan:+.2f}/scan "
+                                            f"(${ev_day:+.0f}/day projected)",
                                             end="",
                                         )
                                     else:
-                                        print(f" | EV/scan=${ev_scan:+.2f}", end="")
+                                        print(
+                                            f"\n   📊 Expected value: ${ev_scan:+.2f}/scan",
+                                            end="",
+                                        )
                                 else:
-                                    print(f" | EV/scan=${ev_scan:+.2f}", end="")
+                                    print(
+                                        f"\n   📊 Expected value: ${ev_scan:+.2f}/scan",
+                                        end="",
+                                    )
 
-                        print()  # newline
+                        print(f"\n   {'─' * 66}\n")  # End separator
 
                         # Debug mode: show top 10 table
                         if self.verbosity == "debug":
-                            print("  DEBUG: Top 10 cycles:")
+                            print("  DEBUG: Top 10 routes:")
                             for i, opp in enumerate(all_cycles[:10], 1):
                                 cycle_str = " -> ".join(opp["cycle"])
                                 print(
                                     f"    {i:2d}. {cycle_str:40s} "
-                                    f"g={opp['gross_profit_pct']:+.3f}% "
-                                    f"f={opp['fee_cost_pct']:.2f}% "
-                                    f"s={opp['slippage_pct']:.2f}% "
-                                    f"n={opp['net_profit_pct']:+.3f}%"
+                                    f"before_costs={opp['gross_profit_pct']:+.3f}% "
+                                    f"fees={opp['fee_cost_pct']:.2f}% "
+                                    f"slippage={opp['slippage_pct']:.2f}% "
+                                    f"final={opp['net_profit_pct']:+.3f}%"
                                 )
 
                     # Update state
@@ -2755,8 +2801,46 @@ class RealTriangularArbitrage:
                         real_per_leg_details,
                     ) = await self.estimate_cycle_slippage(cycle, execution_size)
 
-                    # Recalculate net profit with real slippage at execution size
-                    real_net_profit = gross_profit - fee_cost_pct - real_slippage
+                    # Build LegInfo for BreakevenGuard validation
+                    leg_infos = []
+                    for leg_detail in real_per_leg_details:
+                        leg_infos.append(
+                            LegInfo(
+                                pair=leg_detail["symbol"],
+                                side="buy"
+                                if leg_detail["side"].lower() == "buy"
+                                else "sell",
+                                price_used=leg_detail["price_used"],
+                                price_source=leg_detail["price_source"],
+                                vwap_levels=self.depth_levels,
+                                slippage_pct=leg_detail["slippage_pct"],
+                                fee_pct=self.taker_fee
+                                * 100,  # Per-leg fee as percentage
+                                notional_quote=execution_size
+                                / 3,  # Rough per-leg notional
+                                latency_ms=0,  # CEX has negligible latency
+                            )
+                        )
+
+                    # Validate with BreakevenGuard and compute WHY line
+                    try:
+                        be_line = self.breakeven_guard.compute(
+                            legs=leg_infos,
+                            gross_pct=gross_profit,
+                            gas_units=0,
+                            gas_price_quote=0.0,
+                            total_notional_quote=execution_size,
+                            threshold_pct=self.min_profit_threshold,
+                        )
+                        real_net_profit = be_line.net_pct
+                        logger.info(f"   {be_line.as_why()}")
+                    except (ValueError, AssertionError) as e:
+                        logger.warning(
+                            f"   ⚠️ REJECT: Breakeven validation failed: {e}"
+                        )
+                        self.execution_stats["slippage_rejects"] += 1
+                        continue
+
                     logger.debug(
                         f"   Real slippage: {real_slippage:.3f}% → net profit: {real_net_profit:.3f}%"
                     )
@@ -2872,9 +2956,11 @@ class RealTriangularArbitrage:
                 await asyncio.sleep(15)
 
         except KeyboardInterrupt:
-            print(f"\n\n🛑 Stopped after {trade_num} scans")
+            print("\n\n✋ Stopped by user")
+            print(f"📊 Completed {trade_num} scans")
         except Exception as e:
-            logger.error(f"❌ Trading session error: {e}")
+            print(f"\n❌ Error: {e}")
+            logger.error(f"Trading session error: {e}", exc_info=True)
 
         # Print compact summary
         self.print_summary()
