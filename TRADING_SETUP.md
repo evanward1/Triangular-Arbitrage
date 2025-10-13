@@ -1,117 +1,78 @@
-# Real Trading Setup Guide
+# Live Trading Setup
 
-## ⚠️ IMPORTANT WARNING
-This system trades with REAL MONEY. You can lose money. Only proceed if you understand the risks.
+⚠️ **This system trades with real money. You can lose money. Only proceed if you understand the risks.**
 
-## 1. Setup API Keys
+## Quick Setup
 
-### Step 1: Choose Your Exchange
-Recommended for beginners:
-- **Kraken**: Good for US users, reliable, reasonable fees
-- **Coinbase Pro**: US-based, very reliable
-- **Binance**: High liquidity, many pairs (not available in all US states)
+### 1. Create Exchange API Keys
 
-### Step 2: Create API Keys
-1. Log into your exchange account
-2. Go to API settings
-3. Create a new API key with these permissions:
-   - **Read account balance** ✅
-   - **Place orders** ✅
-   - **Cancel orders** ✅
-   - **Withdraw funds** ❌ (NOT needed, keep disabled for security)
+**Recommended exchanges:**
+- Kraken (US-friendly, reliable)
+- Coinbase Pro (US-based)
+- Binance (high liquidity, restricted in some US states)
 
-### Step 3: Configure Environment
-1. Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
+**API Permissions:**
+- ✅ Read account balance
+- ✅ Place orders
+- ✅ Cancel orders
+- ❌ Withdraw funds (keep disabled)
 
-2. Edit `.env` with your API credentials:
-   ```bash
-   # For Kraken:
-   KRAKEN_API_KEY=your_actual_api_key_here
-   KRAKEN_SECRET=your_actual_secret_here
+### 2. Configure Environment
 
-   # Trading Configuration
-   TRADING_MODE=paper  # Start with 'paper', change to 'live' when ready
-   MAX_POSITION_SIZE=50  # Start small! Max $50 per trade
-   MIN_PROFIT_THRESHOLD=1.0  # Require 1% profit minimum
-   ```
+```bash
+# Copy example config
+cp .env.example .env
 
-## 2. Safety Settings
+# Edit .env
+KRAKEN_API_KEY=your_api_key_here
+KRAKEN_API_SECRET=your_secret_here
 
-### Start Small
-- `MAX_POSITION_SIZE=50` - Only risk $50 per trade initially
-- `MIN_PROFIT_THRESHOLD=1.0` - Only trade if profit > 1%
+# Safety settings (start small!)
+TRADING_MODE=paper
+MAX_POSITION_SIZE=50
+MIN_PROFIT_THRESHOLD=1.0
+```
 
-## 3. Running the System
+### 3. Test in Paper Mode
 
-### Interactive Mode (Recommended)
-Simply run:
 ```bash
 python run_clean.py
+# Choose option 1 (Paper Trading)
 ```
 
-You'll see:
-```
-🚀 Initializing arbitrage trading system...
+Verify the system finds opportunities and simulates trades correctly.
 
-Choose trading mode:
-1. 📝 Paper Trading (Simulation - Safe)
-2. 💰 Live Trading (Real Money - Risk)
+### 4. Switch to Live Trading
 
-Enter your choice (1 or 2):
-```
+```bash
+# Edit .env
+TRADING_MODE=live
 
-- **Choose 1** for safe paper trading (simulation)
-- **Choose 2** for live trading with real money
-
-### What Happens When You Choose:
-
-**Paper Trading (Option 1):**
-```
-📝 PAPER TRADING MODE - Simulation only
-💰 Max position size: $100
-📊 Min profit threshold: 0.5%
-🎯 Monitoring markets for arbitrage opportunities...
+# Run
+python run_clean.py
+# Choose option 2 (Live Trading)
+# Confirm with 'YES' when prompted
 ```
 
-**Live Trading (Option 2):**
-```
-⚠️  LIVE TRADING MODE - Using real money!
-🔑 Checking API keys...
-✅ API keys configured
+## Safety Limits
 
-⚠️  Are you absolutely sure you want to proceed with LIVE trading? Type 'YES':
-```
-
-## 4. Understanding the Output
-
-## 5. Risk Management
-
-### Built-in Safety Features:
-- **Position limits**: Never trades more than MAX_POSITION_SIZE
-- **Profit thresholds**: Only trades if profit > MIN_PROFIT_THRESHOLD
-- **Confirmation prompts**: Asks before live trading
-- **API permissions**: Only needs trading permissions, not withdrawals
-
-### Recommended Limits for Beginners:
-```env
-MAX_POSITION_SIZE=50      # Start with $50 max per trade
-MIN_PROFIT_THRESHOLD=1.0  # Require 1% minimum profit
+**Conservative (Recommended):**
+```bash
+MAX_POSITION_SIZE=50      # $50 per trade
+MIN_PROFIT_THRESHOLD=1.0  # 1% minimum profit
 ```
 
-### Advanced Users:
-```env
-MAX_POSITION_SIZE=500     # Up to $500 per trade
-MIN_PROFIT_THRESHOLD=0.3  # Accept 0.3% minimum profit
+**Aggressive (Advanced):**
+```bash
+MAX_POSITION_SIZE=500     # $500 per trade
+MIN_PROFIT_THRESHOLD=0.3  # 0.3% minimum profit
 ```
 
-## 6. Monitoring
+## Monitoring
 
-The system will show:
+The system displays:
 - Real-time trade execution
-- Actual profit/loss from each cycle
+- Actual profit/loss per cycle
 - Current account balance
 - Win rate and performance metrics
 
@@ -124,39 +85,40 @@ Example output:
    💵 Real Profit/Loss: $+12.50
 ```
 
-## 7. Troubleshooting
+## Troubleshooting
 
-### "API key invalid"
-- Double-check your API key and secret in `.env`
-- Make sure API key has trading permissions enabled
+**"API key invalid"**
+- Verify API key and secret in `.env`
+- Ensure trading permissions are enabled
 
-### "Insufficient funds"
-- Check your exchange account balance
-- Reduce MAX_POSITION_SIZE
+**"Insufficient funds"**
+- Check exchange account balance
+- Lower `MAX_POSITION_SIZE`
 
-### "No profitable opportunities"
-- This is normal - the system waits for good opportunities
-- Try lowering MIN_PROFIT_THRESHOLD slightly
+**"No profitable opportunities"**
+- Normal - system waits for good opportunities
+- Lower `MIN_PROFIT_THRESHOLD` slightly if too restrictive
 
-## 8. Security Best Practices
+## Security Best Practices
 
-1. **Never share your API keys**
-2. **Keep `.env` file private** (it's in .gitignore)
-3. **Use API keys with minimal permissions**
-4. **Start with small amounts**
-5. **Monitor trades closely initially**
+1. Never share API keys
+2. Keep `.env` file private (in .gitignore)
+3. Use minimal API permissions (no withdrawals)
+4. Start with small position sizes
+5. Monitor trades closely initially
 
-## 9. Getting Started Checklist
+## Getting Started Checklist
 
 - [ ] Create exchange account and verify identity
-- [ ] Generate API keys with trading permissions only
+- [ ] Generate API keys (trading only, no withdrawals)
 - [ ] Copy `.env.example` to `.env`
-- [ ] Add your API credentials to `.env`
-- [ ] Set `TRADING_MODE=paper` for testing
+- [ ] Add API credentials to `.env`
+- [ ] Set `TRADING_MODE=paper`
 - [ ] Set small `MAX_POSITION_SIZE=50`
-- [ ] Test with `python run_clean.py`
-- [ ] When satisfied, change to `TRADING_MODE=live`
-- [ ] Run with real money (start small!)
+- [ ] Test with paper trading
+- [ ] When satisfied, switch to `TRADING_MODE=live`
+- [ ] Start with real money (small amounts!)
 
 ---
-**Remember: Only invest what you can afford to lose!**
+
+**Remember: Only invest what you can afford to lose.**

@@ -21,6 +21,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# Import DecisionEngine for explicit trade execution decisions
+from decision_engine import DecisionEngine
+
 # ============================================================================
 # Mode Enum - Single Source of Truth
 # ============================================================================
@@ -452,6 +455,7 @@ class DexConfig(BaseModel):
 
 class DexControlRequest(BaseModel):
     action: str  # "start" or "stop"
+    mode: Optional[str] = None  # "paper_live_chain" or "live" (for start action)
     config: Optional[DexConfig] = None
 
 
@@ -472,6 +476,13 @@ class DexStateManager:
         self.opportunities: Deque[DexOpportunity] = deque(maxlen=max_opportunities)
         self.fills: Deque[DexFill] = deque(maxlen=max_fills)
         self.equity_history: Deque[DexEquityPoint] = deque(maxlen=1000)
+        self.logs: Deque[str] = deque(maxlen=100)  # Keep last 100 logs
+
+        # Decision history for debugging trade execution
+        self.decisions: Deque[Dict[str, Any]] = deque(
+            maxlen=100
+        )  # Keep last 100 decisions
+        self.last_decision: Optional[Dict[str, Any]] = None
 
         # Current config
         self.config = {
@@ -492,6 +503,9 @@ class DexStateManager:
 
         # Background task reference
         self.runner_task: Optional[asyncio.Task] = None
+
+        # Initialize decision engine
+        self.decision_engine: Optional[DecisionEngine] = None
 
     def update_config(self, config: DexConfig):
         """Update configuration from request"""
@@ -550,9 +564,31 @@ class DexStateManager:
         point = DexEquityPoint(ts=time.time(), equity_usd=equity_usd)
         self.equity_history.append(point)
 
+    def add_log(self, message: str):
+        """Add log message and broadcast to clients"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] {message}"
+        self.logs.append(log_entry)
+        # Broadcast log to connected clients
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(
+                    self.broadcast_ws({"type": "log", "message": log_entry})
+                )
+        except Exception as e:
+            logger.debug(f"Could not broadcast log: {e}")
+
+    def add_decision(self, decision_dict: Dict[str, Any]):
+        """Record a trade decision with timestamp"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        decision_entry = {"timestamp": timestamp, **decision_dict}
+        self.decisions.append(decision_entry)
+        self.last_decision = decision_entry
+
     def get_status(self) -> Dict[str, Any]:
         """Get current status snapshot"""
-        return {
+        status = {
             "mode": self.mode.value,
             "paper": self.mode != TradingMode.LIVE,  # True for paper_live_chain and off
             "chain_id": self.chain_id,
@@ -563,6 +599,10 @@ class DexStateManager:
             "best_net_bps": self.best_net_bps,
             "config": self.config,
         }
+        # Include last decision if available
+        if self.last_decision:
+            status["last_decision"] = self.last_decision
+        return status
 
     async def broadcast_ws(self, message: Dict[str, Any]):
         """Broadcast message to all DEX WebSocket clients"""
@@ -588,7 +628,9 @@ dex_state = DexStateManager()
 @app.get("/api/dex/status")
 async def get_dex_status():
     """Get current DEX trading status"""
-    return {"status": dex_state.get_status()}
+    status = dex_state.get_status()
+    status["running"] = dex_state.running
+    return {"status": status}
 
 
 @app.get("/api/dex/opportunities")
@@ -606,32 +648,120 @@ async def get_dex_fills():
 @app.get("/api/dex/equity")
 async def get_dex_equity():
     """Get equity time series"""
-    return {"equity": [point.model_dump() for point in dex_state.equity_history]}
+    return {"points": [point.model_dump() for point in dex_state.equity_history]}
+
+
+@app.get("/api/dex/logs")
+async def get_dex_logs():
+    """Get recent DEX scanner logs"""
+    return {"logs": list(dex_state.logs)}
+
+
+@app.get("/api/dex/decisions")
+async def get_dex_decisions():
+    """Get recent DEX trade decisions for debugging"""
+    return {"decisions": list(dex_state.decisions)}
 
 
 @app.post("/api/dex/control")
 async def control_dex(request: DexControlRequest):
-    """Control DEX trading (start/stop) with config"""
+    """Control DEX trading (start/stop) with config
+
+    Accepts JSON payload:
+    {
+        "action": "start",
+        "mode": "paper_live_chain",  // or "live"
+        "config": {
+            "size_usd": 1000,
+            "min_profit_threshold_bps": 0,
+            "slippage_floor_bps": 5,
+            "expected_maker_legs": 2,
+            "gas_model": "fast"
+        }
+    }
+    or {"action": "stop"}
+    """
     if request.action == "start":
         if dex_state.running:
-            return {"status": "already_running"}
+            return {
+                "status": "already_running",
+                "running": True,
+                "mode": dex_state.mode.value,
+            }
 
-        # Update config if provided
+        # Handle mode from top-level or config
+        if request.mode:
+            if request.mode == "paper_live_chain":
+                dex_state.mode = TradingMode.PAPER_LIVE_CHAIN
+            elif request.mode == "live":
+                dex_state.mode = TradingMode.LIVE
+            else:
+                dex_state.mode = TradingMode.OFF
+
+        # Update config if provided - cast numeric values
         if request.config:
-            dex_state.update_config(request.config)
+            # Build a typed config object with proper casting
+            typed_config = DexConfig()
+            if request.config.size_usd is not None:
+                typed_config.size_usd = float(request.config.size_usd)
+            if request.config.min_profit_threshold_bps is not None:
+                typed_config.min_profit_threshold_bps = float(
+                    request.config.min_profit_threshold_bps
+                )
+            if request.config.slippage_floor_bps is not None:
+                typed_config.slippage_floor_bps = float(
+                    request.config.slippage_floor_bps
+                )
+            if request.config.expected_maker_legs is not None:
+                typed_config.expected_maker_legs = int(
+                    request.config.expected_maker_legs
+                )
+            if request.config.gas_model is not None:
+                typed_config.gas_model = str(request.config.gas_model)
+            if request.config.slippage_mode is not None:
+                typed_config.slippage_mode = str(request.config.slippage_mode)
+            if request.config.chain_id is not None:
+                typed_config.chain_id = int(request.config.chain_id)
+            if request.config.rpc_url is not None:
+                typed_config.rpc_url = str(request.config.rpc_url)
+            if request.config.gas_oracle is not None:
+                typed_config.gas_oracle = str(request.config.gas_oracle)
+            if request.config.simulate_via is not None:
+                typed_config.simulate_via = str(request.config.simulate_via)
+            if request.config.log_tx_objects is not None:
+                typed_config.log_tx_objects = bool(request.config.log_tx_objects)
+            if request.config.rpc_label is not None:
+                typed_config.rpc_label = str(request.config.rpc_label)
+
+            # Handle mode from config
+            if request.config.mode is not None:
+                typed_config.mode = str(request.config.mode)
+
+            dex_state.update_config(typed_config)
 
         dex_state.running = True
 
         # Start background runner
         dex_state.runner_task = asyncio.create_task(run_dex_scanner())
 
-        await dex_state.broadcast_ws({"type": "status", "data": dex_state.get_status()})
+        status_data = dex_state.get_status()
+        status_data["running"] = True
+        await dex_state.broadcast_ws({"type": "status", "data": status_data})
 
-        return {"status": "started", "config": dex_state.config}
+        return {
+            "status": "started",
+            "running": True,
+            "mode": dex_state.mode.value,
+            "config": dex_state.config,
+        }
 
     elif request.action == "stop":
         if not dex_state.running:
-            return {"status": "not_running"}
+            return {
+                "status": "not_running",
+                "running": False,
+                "mode": dex_state.mode.value,
+            }
 
         dex_state.running = False
 
@@ -643,9 +773,14 @@ async def control_dex(request: DexControlRequest):
             except asyncio.CancelledError:
                 pass
 
-        await dex_state.broadcast_ws({"type": "status", "data": dex_state.get_status()})
+        # Set mode back to OFF
+        dex_state.mode = TradingMode.OFF
 
-        return {"status": "stopped"}
+        status_data = dex_state.get_status()
+        status_data["running"] = False
+        await dex_state.broadcast_ws({"type": "status", "data": status_data})
+
+        return {"status": "stopped", "running": False, "mode": dex_state.mode.value}
 
     return {"status": "error", "message": f"Unknown action: {request.action}"}
 
@@ -828,11 +963,36 @@ async def run_dex_scanner():
         rpc_client = MockRPCClient()
         executor = DexExecutor(rpc_client, dex_state.mode)
 
+        # Initialize decision engine with config (convert bps to percent)
+        dex_state.decision_engine = DecisionEngine(
+            {
+                "min_profit_threshold_pct": dex_state.config["min_profit_threshold_bps"]
+                / 100.0,
+                "max_position_usd": dex_state.config["size_usd"],
+                "expected_maker_legs": dex_state.config.get("expected_maker_legs"),
+            }
+        )
+
+        mode_text = (
+            "PAPER (Live Chain)"
+            if dex_state.mode == TradingMode.PAPER_LIVE_CHAIN
+            else "LIVE"
+        )
         logger.info(f"DEX scanner starting in {dex_state.mode.value} mode")
+        dex_state.add_log(f"Scanner started in {mode_text} mode")
+        dex_state.add_log(
+            f"Scan interval: {dex_state.scan_interval_sec}s, Size: ${dex_state.config['size_usd']}"
+        )
 
         while dex_state.running:
             scan_count += 1
             dex_state.last_scan_ts = time.time()
+
+            # Log scan start
+            if scan_count % 5 == 1:  # Log every 5th scan to avoid spam
+                dex_state.add_log(
+                    f"Scan #{scan_count}: Checking {dex_state.pools_loaded} pools"
+                )
 
             # Simulate pool discovery (in production, would query chain)
             dex_state.pools_loaded = 125
@@ -868,13 +1028,42 @@ async def run_dex_scanner():
                 )
                 dex_state.add_opportunity(opp)
 
+                # Log opportunity found
+                path_str = " → ".join(opp.path)
+                dex_state.add_log(
+                    f"Opportunity found: {path_str} | Net: +{opp.net_bps:.2f} bps"
+                )
+
                 # Broadcast opportunity
                 await dex_state.broadcast_ws(
                     {"type": "opportunity", "data": opp.model_dump()}
                 )
 
-                # Execute opportunity every 6th scan (uses live chain data)
-                if scan_count % 6 == 0:
+                # Evaluate opportunity with DecisionEngine (convert bps to percent)
+                decision = dex_state.decision_engine.evaluate_opportunity(
+                    gross_pct=opp.gross_bps / 100.0,
+                    fees_pct=0.0,  # DEX fees typically in slippage
+                    slip_pct=opp.slip_bps / 100.0,
+                    gas_pct=opp.gas_bps / 100.0,
+                    size_usd=opp.size_usd,
+                    has_quote=True,  # Mock always has quotes
+                    has_gas_estimate=True,  # Mock always has gas estimates
+                )
+
+                # Log the decision
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                decision_log = dex_state.decision_engine.format_decision_log(
+                    decision, timestamp
+                )
+                logger.info(decision_log)
+                dex_state.add_log(decision_log)
+
+                # Record decision
+                dex_state.add_decision(decision.to_dict())
+
+                # Execute only if decision is EXECUTE
+                if decision.action == "EXECUTE":
+                    dex_state.add_log(f"Executing opportunity: {path_str}")
                     fill = await executor.execute(opp)
 
                     # Update equity
@@ -882,9 +1071,23 @@ async def run_dex_scanner():
                     dex_state.add_fill(fill)
                     dex_state.add_equity_point(current_equity)
 
+                    # Log fill result
+                    mode_label = "Paper" if fill.paper else "Live"
+                    pnl_sign = "+" if fill.pnl_usd >= 0 else ""
+                    dex_state.add_log(
+                        f"{mode_label} fill: {pnl_sign}${fill.pnl_usd:.2f} "
+                        f"({pnl_sign}{fill.net_bps:.2f} bps) | Equity: ${current_equity:.2f}"
+                    )
+
                     # Broadcast fill
                     await dex_state.broadcast_ws(
                         {"type": "fill", "data": fill.model_dump()}
+                    )
+                else:
+                    # Log skip with reasons
+                    reasons_str = ", ".join(decision.reasons)
+                    dex_state.add_log(
+                        f"Skipping opportunity: {path_str} | Reasons: {reasons_str}"
                     )
 
             # Broadcast status update
@@ -897,9 +1100,11 @@ async def run_dex_scanner():
 
     except asyncio.CancelledError:
         logger.info("DEX scanner stopped")
+        dex_state.add_log("Scanner stopped")
         raise
     except Exception as e:
         logger.error(f"DEX scanner error: {e}", exc_info=True)
+        dex_state.add_log(f"Scanner error: {str(e)}")
         dex_state.running = False
 
 

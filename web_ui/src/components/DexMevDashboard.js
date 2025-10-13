@@ -4,7 +4,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 
 function DexMevDashboard() {
   const [status, setStatus] = useState({
-    mode: 'dex',
+    mode: 'off',
     paper: true,
     chain_id: 1,
     scan_interval_sec: 10,
@@ -25,6 +25,8 @@ function DexMevDashboard() {
   const [opportunities, setOpportunities] = useState([]);
   const [fills, setFills] = useState([]);
   const [equity, setEquity] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [decisions, setDecisions] = useState([]);
   const [running, setRunning] = useState(false);
   const [selectedOpp, setSelectedOpp] = useState(null);
   const [sortField, setSortField] = useState('net_bps');
@@ -41,37 +43,140 @@ function DexMevDashboard() {
     chain_id: 1
   });
 
-  // WebSocket connection
+  // WebSocket connection with reconnect and backoff
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.hostname}:8000/ws/dex`;
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/ws/dex`;
 
     let ws = null;
     let reconnectTimeout = null;
+    let reconnectAttempts = 0;
+    const maxReconnectDelay = 30000; // 30 seconds max
+    const baseDelay = 1000; // 1 second base
+
+    // Recent message buffer (max 200)
+    const messageBuffer = [];
+    const maxBufferSize = 200;
+
+    const fetchSnapshot = async () => {
+      try {
+        const [statusRes, oppsRes, fillsRes, equityRes, logsRes, decisionsRes] = await Promise.all([
+          fetch('/api/dex/status'),
+          fetch('/api/dex/opportunities'),
+          fetch('/api/dex/fills'),
+          fetch('/api/dex/equity'),
+          fetch('/api/dex/logs'),
+          fetch('/api/dex/decisions')
+        ]);
+
+        if (statusRes.ok) {
+          const data = await statusRes.json();
+          setStatus(data.status);
+          setRunning(data.status.running || false);
+        }
+        if (oppsRes.ok) {
+          const data = await oppsRes.json();
+          setOpportunities(data.opportunities || []);
+        }
+        if (fillsRes.ok) {
+          const data = await fillsRes.json();
+          setFills(data.fills || []);
+        }
+        if (equityRes.ok) {
+          const data = await equityRes.json();
+          // Map "points" to equity chart format
+          const points = data.points || [];
+          setEquity(points);
+        }
+        if (logsRes.ok) {
+          const data = await logsRes.json();
+          setLogs(data.logs || []);
+        }
+        if (decisionsRes.ok) {
+          const data = await decisionsRes.json();
+          setDecisions(data.decisions || []);
+        }
+      } catch (error) {
+        console.error('Error fetching snapshot:', error);
+      }
+    };
 
     const connect = () => {
       ws = new WebSocket(wsUrl);
 
-      ws.onopen = () => {
+      ws.onopen = async () => {
         console.log('DEX WebSocket connected');
+        reconnectAttempts = 0;
+
+        // Fetch recent snapshot on connect
+        await fetchSnapshot();
+
+        // Merge any buffered messages
+        messageBuffer.forEach(msg => {
+          if (msg.type === 'opportunity') {
+            setOpportunities(prev => {
+              const exists = prev.some(o => o.id === msg.data.id);
+              if (!exists) {
+                return [msg.data, ...prev].slice(0, 50);
+              }
+              return prev;
+            });
+          } else if (msg.type === 'fill') {
+            setFills(prev => {
+              const exists = prev.some(f => f.id === msg.data.id);
+              if (!exists) {
+                return [msg.data, ...prev].slice(0, 100);
+              }
+              return prev;
+            });
+          }
+        });
+        messageBuffer.length = 0;
       };
 
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
 
+        // Buffer message
+        if (messageBuffer.length < maxBufferSize) {
+          messageBuffer.push(data);
+        } else {
+          messageBuffer.shift();
+          messageBuffer.push(data);
+        }
+
         if (data.type === 'status') {
           setStatus(data.data);
           setRunning(data.data.running || false);
         } else if (data.type === 'opportunity') {
-          setOpportunities(prev => [data.data, ...prev].slice(0, 50));
+          setOpportunities(prev => {
+            const exists = prev.some(o => o.id === data.data.id);
+            if (!exists) {
+              return [data.data, ...prev].slice(0, 50);
+            }
+            return prev;
+          });
         } else if (data.type === 'fill') {
-          setFills(prev => [data.data, ...prev].slice(0, 100));
+          setFills(prev => {
+            const exists = prev.some(f => f.id === data.data.id);
+            if (!exists) {
+              return [data.data, ...prev].slice(0, 100);
+            }
+            return prev;
+          });
+        } else if (data.type === 'equity') {
+          setEquity(prev => [...prev, data.data].slice(-1000));
+        } else if (data.type === 'log') {
+          setLogs(prev => [...prev, data.message].slice(-100));
         }
       };
 
       ws.onclose = () => {
-        console.log('DEX WebSocket disconnected');
-        reconnectTimeout = setTimeout(connect, 3000);
+        console.log('DEX WebSocket disconnected, reconnecting...');
+        reconnectAttempts++;
+        const delay = Math.min(baseDelay * Math.pow(2, reconnectAttempts), maxReconnectDelay);
+        reconnectTimeout = setTimeout(connect, delay);
       };
 
       ws.onerror = (error) => {
@@ -88,43 +193,6 @@ function DexMevDashboard() {
     };
   }, []);
 
-  // Fetch data periodically
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [statusRes, oppsRes, fillsRes, equityRes] = await Promise.all([
-          fetch('/api/dex/status'),
-          fetch('/api/dex/opportunities'),
-          fetch('/api/dex/fills'),
-          fetch('/api/dex/equity')
-        ]);
-
-        if (statusRes.ok) {
-          const data = await statusRes.json();
-          setStatus(data.status);
-        }
-        if (oppsRes.ok) {
-          const data = await oppsRes.json();
-          setOpportunities(data.opportunities || []);
-        }
-        if (fillsRes.ok) {
-          const data = await fillsRes.json();
-          setFills(data.fills || []);
-        }
-        if (equityRes.ok) {
-          const data = await equityRes.json();
-          setEquity(data.equity || []);
-        }
-      } catch (error) {
-        console.error('Error fetching DEX data:', error);
-      }
-    };
-
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
-  }, []);
-
   const handleStart = async () => {
     try {
       const response = await fetch('/api/dex/control', {
@@ -132,12 +200,26 @@ function DexMevDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'start',
-          config: config
+          mode: config.mode,
+          config: {
+            size_usd: parseFloat(config.size_usd),
+            min_profit_threshold_bps: parseFloat(config.min_profit_threshold_bps),
+            slippage_floor_bps: parseFloat(config.slippage_floor_bps),
+            expected_maker_legs: parseInt(config.expected_maker_legs),
+            gas_model: config.gas_model
+          }
         })
       });
 
       if (response.ok) {
-        setRunning(true);
+        const data = await response.json();
+        setRunning(data.running || true);
+        // Refresh status
+        const statusRes = await fetch('/api/dex/status');
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          setStatus(statusData.status);
+        }
       }
     } catch (error) {
       console.error('Error starting DEX:', error);
@@ -153,7 +235,14 @@ function DexMevDashboard() {
       });
 
       if (response.ok) {
-        setRunning(false);
+        const data = await response.json();
+        setRunning(data.running || false);
+        // Refresh status
+        const statusRes = await fetch('/api/dex/status');
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          setStatus(statusData.status);
+        }
       }
     } catch (error) {
       console.error('Error stopping DEX:', error);
@@ -335,6 +424,59 @@ function DexMevDashboard() {
         </div>
       </div>
 
+      {/* Decision Trace Panel */}
+      <div className="dex-panel decision-trace-panel">
+        <h2>Decision Trace (Last 5)</h2>
+        <div className="decision-trace-container">
+          {decisions.length > 0 ? (
+            <table className="decision-trace-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Action</th>
+                  <th>Reasons</th>
+                  <th>Gross</th>
+                  <th>Net</th>
+                  <th>Breakeven</th>
+                  <th>Size</th>
+                </tr>
+              </thead>
+              <tbody>
+                {decisions.slice(0, 5).map((decision, idx) => (
+                  <tr key={idx} className={decision.action === 'EXECUTE' ? 'execute-row' : 'skip-row'}>
+                    <td>{decision.timestamp}</td>
+                    <td>
+                      <span className={`decision-badge ${decision.action === 'EXECUTE' ? 'execute' : 'skip'}`}>
+                        {decision.action}
+                      </span>
+                    </td>
+                    <td className="reasons-cell">
+                      {decision.reasons.length > 0 ? (
+                        <div className="reasons-list">
+                          {decision.reasons.map((reason, ridx) => (
+                            <div key={ridx} className="reason-item">{reason}</div>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="no-reasons">-</span>
+                      )}
+                    </td>
+                    <td className="positive">{decision.metrics.gross_pct?.toFixed(2)}%</td>
+                    <td className={decision.metrics.net_pct >= 0 ? 'positive' : 'negative'}>
+                      {decision.metrics.net_pct?.toFixed(2)}%
+                    </td>
+                    <td>{decision.metrics.breakeven_gross_pct?.toFixed(2)}%</td>
+                    <td>{formatUSD(decision.metrics.size_usd)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="empty-state">No decisions yet</div>
+          )}
+        </div>
+      </div>
+
       {/* Opportunities Table */}
       <div className="dex-panel opps-panel">
         <h2>Opportunities ({opportunities.length})</h2>
@@ -506,11 +648,25 @@ function DexMevDashboard() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+              </table>
             {fills.length === 0 && (
               <div className="empty-state">No fills yet</div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* System Logs */}
+      <div className="dex-panel logs-panel">
+        <h2>System Logs</h2>
+        <div className="logs-container">
+          {logs.length > 0 ? (
+            logs.map((log, idx) => (
+              <div key={idx} className="log-entry">{log}</div>
+            ))
+          ) : (
+            <div className="empty-state">No logs yet</div>
+          )}
         </div>
       </div>
     </div>

@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 import ccxt
 import networkx as nx
 
+from decision_engine import DecisionEngine
 from equity_tracker import EquityTracker
 from triangular_arbitrage.execution_helpers import (
     depth_fill_price,
@@ -384,6 +385,16 @@ class RealTriangularArbitrage:
             os.makedirs("logs", exist_ok=True)
 
         self._setup_exchange()
+
+        # Initialize DecisionEngine
+        self.decision_engine = DecisionEngine(
+            {
+                "min_profit_threshold_pct": self.min_profit_threshold,
+                "max_position_usd": self.max_position_size,
+                "expected_maker_legs": self.expected_maker_legs,
+            }
+        )
+        self.decision_history = deque(maxlen=100)
 
     async def _retry_with_backoff(self, func, operation_name, *args, **kwargs):
         """Execute a function with retry logic and exponential backoff.
@@ -2734,6 +2745,44 @@ class RealTriangularArbitrage:
                                 f"(gap {effective_threshold - real_net_profit:.3f}%) to validate pipeline"
                             )
                             # Continue to execution with capped size
+
+                    # Evaluate with DecisionEngine before execution
+                    # Calculate per-leg notional for CEX validation
+                    legs_data = []
+                    for i, leg in enumerate(real_per_leg_details):
+                        legs_data.append(
+                            {
+                                "notional_usd": execution_size
+                                / 3,  # Rough approximation
+                                "symbol": leg["symbol"],
+                                "side": leg["side"],
+                            }
+                        )
+
+                    decision = self.decision_engine.evaluate_opportunity(
+                        gross_pct=gross_profit,
+                        fees_pct=fee_cost_pct,
+                        slip_pct=real_slippage,
+                        gas_pct=0.0,  # No gas for CEX
+                        size_usd=execution_size,
+                        legs_data=legs_data,
+                        exchange_ready=True,
+                        has_quote=True,
+                    )
+
+                    # Log decision
+                    decision_log = self.decision_engine.format_decision_log(decision)
+                    logger.info(decision_log)
+
+                    # Store decision in history
+                    self.decision_history.append(decision.to_dict())
+
+                    # Only execute if decision is EXECUTE
+                    if decision.action != "EXECUTE":
+                        logger.warning(
+                            f"   ⚠️ DECISION SKIP: {', '.join(decision.reasons)}"
+                        )
+                        continue
 
                     # Execute with depth-limited size
                     result = await self.execute_arbitrage_cycle(cycle, execution_size)

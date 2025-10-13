@@ -136,6 +136,102 @@
   color: #db6d28;
 }
 
+/* Decision Trace Panel */
+.decision-trace-container {
+  overflow-x: auto;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.decision-trace-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.decision-trace-table thead {
+  position: sticky;
+  top: 0;
+  background: #161b22;
+  z-index: 10;
+}
+
+.decision-trace-table th {
+  color: #7d8590;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid #21262d;
+}
+
+.decision-trace-table tbody tr {
+  border-bottom: 1px solid #21262d;
+  transition: background-color 0.2s ease;
+}
+
+.decision-trace-table tbody tr:hover {
+  background-color: #161b22;
+}
+
+.decision-trace-table tbody tr.execute-row {
+  border-left: 3px solid #3fb950;
+}
+
+.decision-trace-table tbody tr.skip-row {
+  border-left: 3px solid #f85149;
+}
+
+.decision-trace-table td {
+  padding: 12px;
+  font-size: 13px;
+  color: #c9d1d9;
+}
+
+.decision-badge {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.decision-badge.execute {
+  background-color: rgba(63, 185, 80, 0.15);
+  color: #3fb950;
+  border: 1px solid rgba(63, 185, 80, 0.4);
+}
+
+.decision-badge.skip {
+  background-color: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+}
+
+.reasons-cell {
+  max-width: 300px;
+}
+
+.reasons-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reason-item {
+  font-size: 12px;
+  color: #f85149;
+  background-color: rgba(248, 81, 73, 0.1);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border-left: 2px solid #f85149;
+}
+
+.no-reasons {
+  color: #484f58;
+  font-style: italic;
+}
+
 /* Opportunities Table */
 .opps-table-container {
   overflow-x: auto;
@@ -367,6 +463,54 @@
   text-align: center;
   color: #484f58;
   font-size: 14px;
+}
+
+/* Logs Panel */
+.logs-panel {
+  margin-top: 20px;
+}
+
+.logs-container {
+  max-height: 300px;
+  overflow-y: auto;
+  background-color: #0d1117;
+  border-radius: 6px;
+  border: 1px solid #30363d;
+  padding: 10px;
+}
+
+.log-entry {
+  padding: 8px 12px;
+  margin-bottom: 4px;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Roboto Mono', monospace;
+  font-size: 13px;
+  color: #c9d1d9;
+  background-color: rgba(110, 118, 129, 0.05);
+  border-radius: 4px;
+  border-left: 3px solid #30363d;
+  line-height: 1.5;
+}
+
+.log-entry:last-child {
+  margin-bottom: 0;
+}
+
+.logs-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.logs-container::-webkit-scrollbar-track {
+  background: #161b22;
+  border-radius: 4px;
+}
+
+.logs-container::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+.logs-container::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
 }
 
 /* Responsive */

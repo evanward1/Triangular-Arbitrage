@@ -81,7 +81,7 @@ class TestDexStatusEndpoint:
         data = response.json()
         status = data["status"]
 
-        assert status["mode"] == "dex"
+        assert status["mode"] == "paper_live_chain"  # Default mode
         assert status["paper"] is True
         assert status["chain_id"] == 1
         assert status["pools_loaded"] == 0
@@ -182,9 +182,9 @@ class TestDexEquityEndpoint:
         assert response.status_code == 200
 
         data = response.json()
-        assert "equity" in data
-        assert isinstance(data["equity"], list)
-        assert len(data["equity"]) == 0
+        assert "points" in data
+        assert isinstance(data["points"], list)
+        assert len(data["points"]) == 0
 
     def test_equity_returns_added_points(self, client, reset_dex_state):
         """Test that equity endpoint returns added equity points"""
@@ -196,11 +196,11 @@ class TestDexEquityEndpoint:
         response = client.get("/api/dex/equity")
         data = response.json()
 
-        assert len(data["equity"]) == 3
-        assert data["equity"][0]["equity_usd"] == 1000.0
-        assert data["equity"][1]["equity_usd"] == 1005.5
-        assert data["equity"][2]["equity_usd"] == 1010.2
-        assert "ts" in data["equity"][0]
+        assert len(data["points"]) == 3
+        assert data["points"][0]["equity_usd"] == 1000.0
+        assert data["points"][1]["equity_usd"] == 1005.5
+        assert data["points"][2]["equity_usd"] == 1010.2
+        assert "ts" in data["points"][0]
 
 
 class TestDexControlEndpoint:
@@ -481,6 +481,272 @@ class TestMockDexRunner:
 
         # Should have set pools_loaded
         assert dex_state.pools_loaded > 0
+
+
+class TestDexControlWithModeAndConfig:
+    """Test POST /api/dex/control with mode and config payload"""
+
+    @pytest.mark.asyncio
+    async def test_control_start_with_mode_paper_live_chain(
+        self, client, reset_dex_state
+    ):
+        """Test starting with paper_live_chain mode"""
+        response = client.post(
+            "/api/dex/control",
+            json={
+                "action": "start",
+                "mode": "paper_live_chain",
+                "config": {
+                    "size_usd": 1000,
+                    "min_profit_threshold_bps": 0,
+                    "slippage_floor_bps": 5,
+                    "expected_maker_legs": 2,
+                    "gas_model": "fast",
+                },
+            },
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["status"] == "started"
+        assert data["running"] is True
+        assert data["mode"] == "paper_live_chain"
+        assert "config" in data
+
+        # Verify state
+        assert dex_state.running is True
+        from web_server import TradingMode
+
+        assert dex_state.mode == TradingMode.PAPER_LIVE_CHAIN
+
+        # Cleanup
+        dex_state.running = False
+        if dex_state.runner_task and not dex_state.runner_task.done():
+            dex_state.runner_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_control_start_casts_numeric_values(self, client, reset_dex_state):
+        """Test that numeric values are properly cast from strings"""
+        response = client.post(
+            "/api/dex/control",
+            json={
+                "action": "start",
+                "mode": "paper_live_chain",
+                "config": {
+                    "size_usd": "1500.5",  # String that should be cast to float
+                    "min_profit_threshold_bps": "10",  # String that should be cast to float
+                    "expected_maker_legs": "3",  # String that should be cast to int
+                },
+            },
+        )
+        assert response.status_code == 200
+
+        # Verify values were cast correctly
+        assert dex_state.config["size_usd"] == 1500.5
+        assert dex_state.config["min_profit_threshold_bps"] == 10.0
+        assert dex_state.config["expected_maker_legs"] == 3
+
+        # Cleanup
+        dex_state.running = False
+        if dex_state.runner_task and not dex_state.runner_task.done():
+            dex_state.runner_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_control_stop_sets_mode_to_off(self, client, reset_dex_state):
+        """Test that stopping sets mode back to OFF"""
+        # Start first
+        dex_state.running = True
+        from web_server import TradingMode
+
+        dex_state.mode = TradingMode.PAPER_LIVE_CHAIN
+
+        response = client.post("/api/dex/control", json={"action": "stop"})
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["status"] == "stopped"
+        assert data["running"] is False
+        assert data["mode"] == "off"
+
+        # Verify state
+        assert dex_state.running is False
+        assert dex_state.mode == TradingMode.OFF
+
+    def test_control_returns_running_flag(self, client, reset_dex_state):
+        """Test that control responses include running flag"""
+        response = client.post(
+            "/api/dex/control", json={"action": "start", "mode": "paper_live_chain"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "running" in data
+        assert data["running"] is True
+
+        # Cleanup
+        dex_state.running = False
+        if dex_state.runner_task and not dex_state.runner_task.done():
+            dex_state.runner_task.cancel()
+
+
+class TestDexStatusWithRunningFlag:
+    """Test GET /api/dex/status includes running flag"""
+
+    def test_status_includes_running_flag_when_stopped(self, client, reset_dex_state):
+        """Test that status includes running=False when stopped"""
+        dex_state.running = False
+
+        response = client.get("/api/dex/status")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "status" in data
+        assert "running" in data["status"]
+        assert data["status"]["running"] is False
+
+    def test_status_includes_running_flag_when_started(self, client, reset_dex_state):
+        """Test that status includes running=True when started"""
+        dex_state.running = True
+
+        response = client.get("/api/dex/status")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "status" in data
+        assert "running" in data["status"]
+        assert data["status"]["running"] is True
+
+
+class TestDexWebSocketEvents:
+    """Test WebSocket event delivery"""
+
+    @pytest.mark.asyncio
+    async def test_websocket_receives_status_on_control_start(
+        self, client, reset_dex_state
+    ):
+        """Test that WebSocket clients receive status update on control start"""
+        with client.websocket_connect("/ws/dex") as websocket:
+            # Receive initial status
+            initial = websocket.receive_json()
+            assert initial["type"] == "status"
+
+            # Start via control endpoint
+            client.post(
+                "/api/dex/control", json={"action": "start", "mode": "paper_live_chain"}
+            )
+
+            # Should receive status update
+            # Note: In real test we'd wait for broadcast, but TestClient is sync
+            # This test documents expected behavior
+
+        # Cleanup
+        dex_state.running = False
+        if dex_state.runner_task and not dex_state.runner_task.done():
+            dex_state.runner_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_websocket_receives_status_on_control_stop(
+        self, client, reset_dex_state
+    ):
+        """Test that WebSocket clients receive status update on control stop"""
+        dex_state.running = True
+
+        with client.websocket_connect("/ws/dex") as websocket:
+            # Receive initial status
+            initial = websocket.receive_json()
+            assert initial["type"] == "status"
+
+            # Stop via control endpoint
+            client.post("/api/dex/control", json={"action": "stop"})
+
+            # Should receive status update with running=False
+            # Note: TestClient limitations prevent async broadcast testing
+
+
+class TestDexIntegrationScenario:
+    """Integration test covering full DEX scanner lifecycle"""
+
+    @pytest.mark.asyncio
+    async def test_full_dex_lifecycle(self, client, reset_dex_state):
+        """Test complete start -> opportunities -> fills -> stop flow"""
+        # 1. Start scanner with paper_live_chain mode
+        start_response = client.post(
+            "/api/dex/control",
+            json={
+                "action": "start",
+                "mode": "paper_live_chain",
+                "config": {"size_usd": 1000, "min_profit_threshold_bps": 5},
+            },
+        )
+        assert start_response.status_code == 200
+        assert start_response.json()["running"] is True
+
+        # 2. Verify status shows running
+        status_response = client.get("/api/dex/status")
+        assert status_response.status_code == 200
+        status_data = status_response.json()
+        assert status_data["status"]["running"] is True
+        assert status_data["status"]["mode"] == "paper_live_chain"
+
+        # 3. Manually add opportunities and fills (simulating scanner)
+        opp1 = DexOpportunity(
+            id="test_opp_1",
+            path=["USDC", "WETH", "DAI"],
+            gross_bps=25.0,
+            net_bps=7.0,
+            gas_bps=16.0,
+            slip_bps=2.0,
+            size_usd=1000.0,
+            legs=[],
+            ts=1234567890.0,
+        )
+        opp2 = DexOpportunity(
+            id="test_opp_2",
+            path=["DAI", "WBTC", "USDC"],
+            gross_bps=30.0,
+            net_bps=10.0,
+            gas_bps=18.0,
+            slip_bps=2.0,
+            size_usd=1000.0,
+            legs=[],
+            ts=1234567891.0,
+        )
+        dex_state.add_opportunity(opp1)
+        dex_state.add_opportunity(opp2)
+
+        fill1 = DexFill(
+            id="test_fill_1",
+            paper=True,
+            tx_hash=None,
+            net_bps=6.8,
+            pnl_usd=0.68,
+            ts=1234567892.0,
+            simulation={"gas_used": 175000, "success": True},
+        )
+        dex_state.add_fill(fill1)
+
+        # 4. GET endpoints return data
+        opps_response = client.get("/api/dex/opportunities")
+        assert opps_response.status_code == 200
+        opps_data = opps_response.json()
+        assert len(opps_data["opportunities"]) == 2
+
+        fills_response = client.get("/api/dex/fills")
+        assert fills_response.status_code == 200
+        fills_data = fills_response.json()
+        assert len(fills_data["fills"]) == 1
+        assert fills_data["fills"][0]["paper"] is True
+
+        # 5. Stop scanner
+        stop_response = client.post("/api/dex/control", json={"action": "stop"})
+        assert stop_response.status_code == 200
+        assert stop_response.json()["running"] is False
+        assert stop_response.json()["mode"] == "off"
+
+        # 6. Verify status shows stopped
+        status_response = client.get("/api/dex/status")
+        assert status_response.status_code == 200
+        status_data = status_response.json()
+        assert status_data["status"]["running"] is False
 
 
 if __name__ == "__main__":
