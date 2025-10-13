@@ -76,6 +76,8 @@ class ArbitrageExecutor:
             "net_bps": opp.net_bps,
             "gas_est_wei": opp.gas_cost_wei,
             "gas_cost_usd": float(opp.gas_cost_usd),
+            "per_leg_fee_bps": opp.per_leg_fee_bps,
+            "total_fee_bps": opp.total_fee_bps,
             "per_leg_slippage_bps": opp.per_leg_slippage_bps,
             "total_slippage_bps": opp.total_slippage_bps,
             "slippage_cost_usd": float(opp.slippage_cost_usd),
@@ -110,6 +112,10 @@ class ArbitrageExecutor:
         print("")
         print(f"💰 Gross Profit:     {opp.gross_bps:.2f} bps")
         print(
+            f"💵 DEX Fees:         {opp.total_fee_bps:.1f} bps "
+            f"({len(opp.per_leg_fee_bps)} legs × {opp.per_leg_fee_bps[0]:.1f} bps)"
+        )
+        print(
             f"📉 Slippage Cost:    ${opp.slippage_cost_usd:.2f} ({opp.total_slippage_bps:.1f} bps)"
         )
         print(f"⛽ Gas Cost:         ${opp.gas_cost_usd:.2f} ({opp.gas_cost_wei:,} wei)")
@@ -128,6 +134,18 @@ class ArbitrageExecutor:
 
     def execute_opportunity(self, opportunity: ArbitrageOpportunity) -> Dict:
         """Execute an arbitrage opportunity - PAPER TRADING ONLY."""
+        # CRITICAL: Refresh opportunity right before execution to ensure profitability
+        try:
+            opportunity = self.solver.refresh_and_revalidate(opportunity)
+        except ValueError as e:
+            logger.warning(f"Opportunity invalidated during pre-execution refresh: {e}")
+            return {
+                "transaction_hash": None,
+                "gas_used": 0,
+                "status": "aborted",
+                "note": f"REFRESH_FAILED: {e}",
+            }
+
         # Structured execution log
         execution_log = {
             "action": "EXECUTE_OPPORTUNITY",
@@ -139,6 +157,7 @@ class ArbitrageExecutor:
             "amounts": [float(amt) for amt in opportunity.amounts],
             "gross_bps": opportunity.gross_bps,
             "net_bps": opportunity.net_bps,
+            "total_fee_bps": opportunity.total_fee_bps,
             "gas_est": opportunity.gas_cost_wei,
             "gas_cost_usd": float(opportunity.gas_cost_usd),
             "breakeven_before_gas": float(opportunity.breakeven_before_gas),
@@ -146,6 +165,7 @@ class ArbitrageExecutor:
             "total_slippage_bps": opportunity.total_slippage_bps,
             "slippage_cost_usd": float(opportunity.slippage_cost_usd),
             "simulation_ok": True,
+            "refreshed": True,
         }
         logger.info(f"EXECUTION_START: {execution_log}")
 

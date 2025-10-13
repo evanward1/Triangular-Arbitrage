@@ -22,13 +22,25 @@ class TestSolverMath(unittest.TestCase):
         """Set up test fixtures."""
         # Create mock config
         self.config = DEXMEVConfig(
+            network="ethereum",
             chain_id=1,
             rpc_url_env="TEST_RPC",
+            rpc_primary="",
+            rpc_backups=[],
             private_key_env="TEST_KEY",
             base_asset="USDC",
             min_profit_bps=1,  # Very low threshold for tests
             max_slippage_bps=50,
-            max_gas_gwei=30,
+            per_leg_slippage_bps=50,
+            cycle_slippage_bps=100,
+            max_base_fee_gwei=30,
+            max_priority_fee_gwei=2,
+            gas_limit_cap=500000,
+            private_tx_enabled=False,
+            mev_relay="",
+            simulation_rpc="",
+            exact_in=True,
+            use_bundle=False,
             routes=[
                 RouteConfig(
                     base="USDC",
@@ -55,6 +67,7 @@ class TestSolverMath(unittest.TestCase):
 
         # Create fake client
         self.fake_client = Mock(spec=DEXClient)
+        self.fake_client.paper_mode = True
         self.fake_client.estimate_swap_output.side_effect = [
             Decimal("0.4985"),  # USDC -> WETH (1000 USDC = ~0.5 ETH with 0.3% fee)
             Decimal("1000.5"),  # WETH -> USDT (0.4985 ETH = ~1000.5 USDT)

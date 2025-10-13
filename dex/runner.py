@@ -681,6 +681,13 @@ class DexRunner:
 
         Runs indefinitely unless config.once=True.
         """
+        # Block until pools are loaded
+        if not self.pools:
+            raise RuntimeError(
+                "No pools loaded. Call fetch_pools() before run(). "
+                "Refusing to scan with 0 pools to avoid stale or invalid opportunities."
+            )
+
         self.print_banner()
 
         scan_num = 0
@@ -709,6 +716,13 @@ class DexRunner:
         Uses scan_async() for 20-40x speedup on reserve fetching.
         Runs indefinitely unless config.once=True.
         """
+        # Block until pools are loaded
+        if not self.pools:
+            raise RuntimeError(
+                "No pools loaded. Call fetch_pools() before run_async(). "
+                "Refusing to scan with 0 pools to avoid stale or invalid opportunities."
+            )
+
         self.print_banner()
 
         scan_num = 0

@@ -239,6 +239,7 @@ class TestSlippageEnforcement(unittest.TestCase):
         )
 
         self.fake_client = Mock(spec=DEXClient)
+        self.fake_client.paper_mode = True
         self.fake_client.get_gas_price.return_value = 20
         self.solver = ArbitrageSolver(self.config, self.fake_client)
 
@@ -371,6 +372,7 @@ class TestBreakevenCalculation(unittest.TestCase):
         )
 
         self.fake_client = Mock(spec=DEXClient)
+        self.fake_client.paper_mode = True
         self.fake_client.get_gas_price.return_value = 20
         self.solver = ArbitrageSolver(self.config, self.fake_client)
 
