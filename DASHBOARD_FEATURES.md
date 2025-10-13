@@ -1,5 +1,11 @@
 # Dashboard Features
 
+## Overview
+
+The web dashboard now supports **two modes** via a tabbed interface:
+1. **CEX Tab**: Centralized exchange triangular arbitrage
+2. **DEX & MEV Tab**: Decentralized exchange and MEV opportunities
+
 ## ✨ What's New
 
 ### Trading Mode Selection
@@ -162,9 +168,95 @@ COINBASE_API_SECRET=
 - Restart web server
 - Hard refresh browser
 
+## 🔷 DEX & MEV Tab Features
+
+### Control Panel
+Configure your DEX scanner with:
+- **Mode**: Paper or Live trading
+- **Chain**: Ethereum (1), Polygon (137), Arbitrum (42161)
+- **Size (USD)**: Position size per opportunity
+- **Min Profit (bps)**: Minimum profit threshold in basis points
+- **Slippage Floor (bps)**: Minimum slippage assumption
+- **Expected Maker Legs**: Number of maker orders expected
+- **Gas Model**: slow, standard, fast, or instant
+
+All controls are disabled when scanner is running for safety.
+
+### Status Panel
+Real-time display of:
+- Current mode (Paper/Live)
+- Active chain
+- Number of pools loaded
+- Scan interval (seconds)
+- Best gross profit (bps)
+- Best net profit (bps)
+- Last scan timestamp
+
+### Opportunities Table
+- **Sortable columns**: Click headers to sort by Gross, Net, Gas, or Slip
+- **Path display**: Shows full token path (e.g., USDC → WETH → DAI)
+- **Color coding**: Green for positive net profit, red for negative
+- **Row selection**: Click to open detailed drawer
+- **Live updates**: New opportunities stream in via WebSocket
+
+### Opportunity Details Drawer
+Opens on the right when you select an opportunity:
+- Full path breakdown
+- Gross/net profit with gas and slippage breakdown
+- **Leg-by-leg details**:
+  - Pair and side (buy/sell)
+  - Price and liquidity
+  - Estimated slippage per leg
+
+### Equity Chart
+- Live equity curve using Recharts
+- Shows paper or live trading performance
+- Updates in real-time as fills execute
+- Hover for timestamp and equity value
+
+### Fills Table
+Recent execution history:
+- Timestamp
+- Mode badge (Paper/Live)
+- Net profit in basis points
+- P&L in USD
+- **Transaction link**: Click "View" to see on block explorer (live mode only)
+
+### Trading Modes
+
+The DEX tab supports two execution modes:
+
+#### Paper (Live Chain) - Default & Recommended
+- Uses **live RPC data** from real blockchain
+- Reads pool reserves, prices, and liquidity from chain
+- Calculates gas costs using live gas oracles
+- Simulates transactions with `eth_call` or `eth_estimateGas`
+- Records realistic PnL with actual gas and slippage
+- **Never broadcasts** transactions - simulation only
+- Safe for testing with real market conditions
+
+#### Live Trading
+- Full execution with real transaction broadcasts
+- Requires private keys and funded wallet
+- Actually sends transactions to blockchain
+- Use with extreme caution
+
+### Mode Indicator
+The status panel shows:
+- **"Paper (Live Chain)"** - Green, safe mode
+- **"Live"** - Red, real money at risk
+
+### Simulation Details
+Every fill in Paper (Live Chain) mode includes:
+- `gas_used`: Actual gas consumed in simulation
+- `success`: Whether simulation succeeded
+- `gas_estimate`: Pre-execution gas estimate
+- `paper`: Always true for paper mode
+- `tx_hash`: Always null (no broadcast)
+
 ## 📊 API Endpoints
 
-Test the API directly:
+### CEX Endpoints
 
 ```bash
 # Check health
@@ -184,6 +276,39 @@ curl -X POST http://localhost:8000/api/bot/stop
 
 # Get logs
 curl http://localhost:8000/api/logs
+```
+
+### DEX/MEV Endpoints
+
+```bash
+# Get DEX status
+curl http://localhost:8000/api/dex/status
+
+# Get opportunities
+curl http://localhost:8000/api/dex/opportunities
+
+# Get fills
+curl http://localhost:8000/api/dex/fills
+
+# Get equity time series
+curl http://localhost:8000/api/dex/equity
+
+# Start DEX scanner with config
+curl -X POST http://localhost:8000/api/dex/control \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "start",
+    "config": {
+      "size_usd": 1000,
+      "min_profit_threshold_bps": 0,
+      "paper": true
+    }
+  }'
+
+# Stop DEX scanner
+curl -X POST http://localhost:8000/api/dex/control \
+  -H "Content-Type: application/json" \
+  -d '{"action": "stop"}'
 ```
 
 ## 🎯 Next Steps
