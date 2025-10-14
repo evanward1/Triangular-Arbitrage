@@ -4,6 +4,34 @@
   gap: 20px;
 }
 
+/* Summary Banner */
+.dex-summary-banner {
+  background: linear-gradient(135deg, #1a1f3a 0%, #0d1117 100%);
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 16px 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  margin-bottom: 10px;
+}
+
+.summary-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.summary-text {
+  color: #c9d1d9;
+  font-size: 15px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.summary-text strong {
+  color: #f0f6fc;
+  font-weight: 600;
+}
+
 .dex-panel {
   background: #161b22;
   border-radius: 8px;
@@ -275,6 +303,19 @@
   border-left: 3px solid #58a6ff;
 }
 
+/* Profit color coding */
+.opps-table tbody tr.profit-good {
+  border-left: 3px solid #3fb950;
+}
+
+.opps-table tbody tr.profit-marginal {
+  border-left: 3px solid #d29922;
+}
+
+.opps-table tbody tr.profit-loss {
+  border-left: 3px solid #f85149;
+}
+
 .opps-table td {
   padding: 12px;
   font-size: 14px;
@@ -358,6 +399,86 @@
   font-size: 13px;
 }
 
+.drawer-section.highlight {
+  background-color: rgba(56, 139, 253, 0.1);
+  border-color: rgba(56, 139, 253, 0.3);
+}
+
+.drawer-section h4 {
+  color: #f0f6fc;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.route-display {
+  color: #f0f6fc;
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 5px;
+}
+
+/* Cost Breakdown Styling */
+.cost-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cost-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  background-color: rgba(110, 118, 129, 0.05);
+  border-radius: 4px;
+}
+
+.cost-line.indent {
+  margin-left: 20px;
+  background-color: rgba(248, 81, 73, 0.08);
+}
+
+.cost-line.highlight {
+  background-color: rgba(63, 185, 80, 0.15);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+}
+
+.cost-line.total {
+  background-color: rgba(56, 139, 253, 0.15);
+  border: 1px solid rgba(56, 139, 253, 0.3);
+  margin-top: 8px;
+  padding: 12px 10px;
+}
+
+.cost-label {
+  color: #7d8590;
+  font-size: 13px;
+}
+
+.cost-value {
+  color: #c9d1d9;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.usd-equiv {
+  color: #7d8590;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.cost-separator {
+  color: #7d8590;
+  font-size: 12px;
+  font-style: italic;
+  padding: 4px 10px;
+  text-align: center;
+}
+
 .legs-section {
   display: flex;
   flex-direction: column;
@@ -365,16 +486,28 @@
 }
 
 .leg-detail {
-  padding: 10px;
+  padding: 12px;
   background-color: rgba(46, 160, 67, 0.1);
   border-radius: 6px;
   border: 1px solid rgba(46, 160, 67, 0.3);
 }
 
-.leg-detail div {
+.leg-header {
+  color: #f0f6fc;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.leg-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.leg-info div {
   color: #c9d1d9;
   font-size: 13px;
-  margin-bottom: 3px;
 }
 
 /* Bottom Row: Equity + Fills */
