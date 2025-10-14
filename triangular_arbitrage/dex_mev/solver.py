@@ -3,6 +3,7 @@ Arbitrage solver for discovering and evaluating base -> mid -> alt -> base cycle
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import List
@@ -30,6 +31,9 @@ class ArbitrageOpportunity:
     slippage_cost_usd: Decimal  # Slippage cost in USD
     breakeven_before_gas: Decimal  # Profit before gas costs
     breakeven_after_gas: Decimal  # Profit after all costs
+    per_leg_fee_bps: List[float]  # DEX fee per leg in bps (e.g., 30 for 0.3%)
+    total_fee_bps: float  # Total DEX fees across all legs in bps
+    snapshot_timestamp: float = 0.0  # Unix timestamp when opportunity was calculated
 
 
 class ArbitrageSolver:
@@ -177,6 +181,13 @@ class ArbitrageSolver:
                 )
                 return None
 
+            # Calculate DEX fees (0.3% = 30 bps per leg for most DEXes)
+            # In paper mode, the swap math already applies 0.3% per leg
+            # We need to track this explicitly so DecisionEngine can display it
+            fee_bps_per_leg = 30.0  # 0.3% standard Uniswap V2 fee
+            per_leg_fee_bps = [fee_bps_per_leg, fee_bps_per_leg, fee_bps_per_leg]
+            total_fee_bps = sum(per_leg_fee_bps)
+
             # Calculate gross profit
             gross_profit = amount_base_final - notional_amount
             gross_bps = float((gross_profit / notional_amount) * 10000)
@@ -219,6 +230,9 @@ class ArbitrageSolver:
                 return None
 
             # Calculate net profit in bps
+            # IMPORTANT: This is the authoritative net calculation for DEX opportunities.
+            # Do NOT recalculate net by subtracting costs from gross elsewhere - that leads
+            # to double-counting. The breakeven_after_gas already accounts for all costs.
             net_profit = breakeven_after_gas
             net_bps = float((net_profit / notional_amount) * 10000)
 
@@ -236,6 +250,9 @@ class ArbitrageSolver:
                 slippage_cost_usd=slippage_cost_usd,
                 breakeven_before_gas=breakeven_before_gas,
                 breakeven_after_gas=breakeven_after_gas,
+                per_leg_fee_bps=per_leg_fee_bps,
+                total_fee_bps=total_fee_bps,
+                snapshot_timestamp=time.time(),
             )
 
         except Exception as e:
@@ -248,3 +265,58 @@ class ArbitrageSolver:
         """Calculate optimal amount for maximum profit (simplified)."""
         # Stub implementation - would implement more sophisticated optimization
         return Decimal("1000.0")
+
+    def refresh_and_revalidate(
+        self, opportunity: ArbitrageOpportunity
+    ) -> ArbitrageOpportunity:
+        """
+        Refresh reserves and recalculate opportunity metrics.
+
+        This should be called right before execution to ensure the opportunity
+        is still valid with current on-chain reserves.
+
+        Args:
+            opportunity: The original opportunity to refresh
+
+        Returns:
+            Updated ArbitrageOpportunity with fresh reserves and metrics,
+            or None if the opportunity is no longer valid
+
+        Raises:
+            ValueError: If refreshed opportunity falls below profitability threshold
+        """
+        logger.info(
+            f"Refreshing opportunity: {opportunity.route.base}->{opportunity.route.mid}->{opportunity.route.alt} "
+            f"(original net={opportunity.net_bps:.2f} bps, age={time.time() - opportunity.snapshot_timestamp:.1f}s)"
+        )
+
+        # Re-evaluate the route with current reserves
+        refreshed = self._evaluate_route(opportunity.route, opportunity.notional_amount)
+
+        if refreshed is None:
+            raise ValueError(
+                f"Opportunity no longer valid after refresh: "
+                f"original_net={opportunity.net_bps:.2f} bps, "
+                f"route={opportunity.route.base}->{opportunity.route.mid}->{opportunity.route.alt}"
+            )
+
+        # Check if net profit dropped significantly (more than 20% decline)
+        net_decline_pct = (
+            (opportunity.net_bps - refreshed.net_bps) / opportunity.net_bps * 100
+            if opportunity.net_bps != 0
+            else 0
+        )
+
+        if net_decline_pct > 20:
+            logger.warning(
+                f"Opportunity profit declined {net_decline_pct:.1f}% after refresh: "
+                f"original_net={opportunity.net_bps:.2f} bps -> refreshed_net={refreshed.net_bps:.2f} bps"
+            )
+
+        logger.info(
+            f"Opportunity refreshed successfully: "
+            f"net={refreshed.net_bps:.2f} bps (was {opportunity.net_bps:.2f} bps, "
+            f"change={refreshed.net_bps - opportunity.net_bps:+.2f} bps)"
+        )
+
+        return refreshed

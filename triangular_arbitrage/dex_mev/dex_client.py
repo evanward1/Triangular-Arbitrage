@@ -274,10 +274,11 @@ class DEXClient:
             logger.debug(
                 f"PAPER: Estimating swap {amount_in} {token_in} -> {token_out}"
             )
-            fee = Decimal("0.997")  # 0.3% fee
+            fee = Decimal("0.997")  # 0.3% fee per leg
 
             # Mock rates that create realistic arbitrage opportunities
             # Designed to yield ~300-400 bps gross, ~100-150 bps net after costs
+            # Added DAI routes to fix missing mock rates for USDC -> WETH -> DAI cycles
             if token_in == "USDC" and token_out == "WETH":
                 # 1000 USDC -> 0.5015 WETH (slightly better rate than market)
                 rate = Decimal("0.0005015")
@@ -287,7 +288,14 @@ class DEXClient:
             elif token_in == "USDT" and token_out == "USDC":
                 # 1015 USDT -> 1035 USDC (USDC premium completes arb)
                 rate = Decimal("1.0197")  # Creates 1.97% gain on this leg
+            elif token_in == "WETH" and token_out == "DAI":
+                # 0.5015 WETH -> 1015 DAI (similar to USDT pair)
+                rate = Decimal("2023.93")  # Creates 2.39% gain on this leg
+            elif token_in == "DAI" and token_out == "USDC":
+                # 1015 DAI -> 1035 USDC (DAI to USDC completes arb)
+                rate = Decimal("1.0197")  # Creates 1.97% gain on this leg
             else:
+                # Default small edge for unmocked pairs
                 rate = Decimal("1.0015")
 
             return amount_in * rate * fee
