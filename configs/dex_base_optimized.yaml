@@ -1,0 +1,157 @@
+# ===================================================================
+# OPTIMIZED DEX CONFIG - Base L2
+#
+# Multi-venue Base arbitrage with Aerodrome, Uniswap V3, and BaseSwap.
+# Lower gas than Arbitrum, strong Coinbase ecosystem liquidity.
+# ===================================================================
+
+# ===== NETWORK & RPC =====
+rpc_url: "https://base-mainnet.g.alchemy.com/v2/YOUR_KEY_HERE"  # Replace with your key
+poll_sec: 2
+once: false
+
+# ===== TRADING PARAMETERS =====
+usd_token: "USDC"
+max_position_usd: 1000
+price_safety_margin_pct: 0.05        # 5bp safety margin
+apply_safety_per_leg: false
+threshold_net_pct: 0.0
+
+# Profit thresholding
+min_gross_bps: 50                     # 0.50% minimum gross (Base gas is very cheap)
+
+# ===== GAS COST (L2 - Extremely cheap on Base!) =====
+gas_price_gwei: 0.05                  # Base gas is ~0.05 gwei
+gas_limit: 250000
+# Estimated: 250k × 0.05 gwei × $3000/ETH ≈ $0.0375
+# At $1k trade: 0.0375 / 1000 = 3.75 bps (negligible)
+# gas_cost_usd_override: 0.05
+
+# ===== TOKEN DEFINITIONS =====
+tokens:
+  WETH:
+    address: "0x4200000000000000000000000000000000000006"  # Base WETH
+    decimals: 18
+
+  USDC:
+    address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # Base USDC (native)
+    decimals: 6
+
+  USDbC:
+    address: "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA"  # Bridged USDC
+    decimals: 6
+
+  DAI:
+    address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb"  # Base DAI
+    decimals: 18
+
+  cbETH:
+    address: "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22"  # Coinbase wrapped ETH
+    decimals: 18
+
+# ===== DEX DEFINITIONS =====
+dexes:
+  # ----- Aerodrome (Base's dominant DEX) -----
+  - name: "aerodrome"
+    kind: "v2"  # Actually uses Velodrome v2 fork (stable + volatile pools)
+    router: "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43"
+    factory: "0x420DD381b31aEf6683db6B902084cB0FFECe40Da"
+    fee_bps: 5   # 5bp for stable, 30bp for volatile (use weighted avg)
+    pairs:
+      - name: "WETH/USDC"
+        address: "0xB4885Bc63399BF5518b994c1d0C153334Ee579D0"  # Volatile pool
+        base: "WETH"
+        quote: "USDC"
+
+      - name: "USDC/USDbC"
+        address: "0xf3f6F18eAd47ef553Afd6e4C2f6A0b5A7E3A1B29"  # Stable pool
+        base: "USDC"
+        quote: "USDbC"
+
+      - name: "cbETH/WETH"
+        address: "0x44Ecc644449fC3a9858d2007CaA8CFAa4C561f91"  # Volatile pool
+        base: "cbETH"
+        quote: "WETH"
+
+  # ----- Uniswap V3 -----
+  - name: "uniswap_v3"
+    kind: "v3"
+    router: "0x2626664c2603336E57B271c5C0b26F421741e481"  # SwapRouter02 on Base
+    quoter: "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a"  # QuoterV2
+    fee_tiers: [100, 500, 3000, 10000]
+    pairs:
+      - name: "WETH/USDC"
+        fee_bps: 5
+        base: "WETH"
+        quote: "USDC"
+
+      - name: "WETH/USDbC"
+        fee_bps: 5
+        base: "WETH"
+        quote: "USDbC"
+
+      - name: "cbETH/WETH"
+        fee_bps: 5
+        base: "cbETH"
+        quote: "WETH"
+
+  # ----- BaseSwap (Uniswap V2 fork) -----
+  - name: "baseswap"
+    kind: "v2"
+    router: "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86"
+    factory: "0xFDa619b6d20975be80A10332cD39b9a4b0FAa8BB"
+    fee_bps: 25
+    pairs:
+      - name: "WETH/USDC"
+        address: "0xc9034c3E7F58003E6ae0C8438e7c8f4598d5ACAA"  # Check actual address
+        base: "WETH"
+        quote: "USDC"
+
+  # ----- SushiSwap V3 (recently deployed on Base) -----
+  - name: "sushiswap_v3"
+    kind: "v3"
+    router: "0xFB7eF66a7e61224DD6FcD0D7d9C3be5C8B049b9f"
+    quoter: "0xb1E835Dc2785b52265711e17fCCb0fd018226a6e"
+    fee_tiers: [100, 500, 3000, 10000]
+    pairs:
+      - name: "WETH/USDC"
+        fee_bps: 5
+        base: "WETH"
+        quote: "USDC"
+
+# ===== ADAPTIVE SIZING =====
+adaptive_sizing:
+  enabled: true
+  max_pct_of_liquidity: 0.08         # Base has good depth - use 8%
+  min_liquidity_usd: 30000           # Lower min due to newer ecosystem
+
+# ===== SLIPPAGE & EXECUTION =====
+per_leg_slippage_bps: 40             # Tighter on Base (better spreads)
+cycle_slippage_bps: 80
+
+# ===== ROUTE EXAMPLES =====
+# Auto-discover or specify:
+# routes:
+#   - base: "USDC"
+#     mid: "WETH"
+#     alt: "USDbC"
+#   - base: "WETH"
+#     mid: "cbETH"
+#     alt: "USDC"
+
+# ===== EXECUTION MODE =====
+execution_mode: "paper"
+
+# ===== MONITORING =====
+log_level: "INFO"
+metrics_enabled: true
+alert_on_profit: true
+min_alert_profit_usd: 3              # Lower threshold due to cheap gas
+
+# ===== BASE-SPECIFIC NOTES =====
+# 1. Aerodrome has deepest liquidity on Base (~60% TVL)
+# 2. Gas is extremely cheap (~0.001-0.01 cents per tx)
+# 3. cbETH <-> WETH arbs are common (Coinbase liquidity flows)
+# 4. USDC vs USDbC spreads can be profitable (bridged vs native)
+# 5. Lower competition than Arbitrum = more opportunities
+# 6. Coinbase users provide retail-driven volume spikes

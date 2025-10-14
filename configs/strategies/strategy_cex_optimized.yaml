@@ -1,0 +1,179 @@
+# ===================================================================
+# OPTIMIZED CEX STRATEGY - Binance/BinanceUS
+#
+# Addresses the SHIB mirage problem and thin order book issues.
+# Focus: Liquid majors with depth-aware sizing and realistic caps.
+# ===================================================================
+
+name: cex_optimized_liquid_majors
+exchange: binance  # or binanceus depending on your API keys
+trading_pairs_file: data/cycles/binance_cycles_complete.csv
+
+# ==== PROFIT & RISK THRESHOLDS ====
+# Net profit after fees + slippage + gas must exceed this
+min_profit_bps: 10                    # 0.10% minimum net profit
+max_slippage_bps: 35                  # 0.35% default per-leg slippage cap
+max_leg_latency_ms: 5000              # 5s max latency per leg
+
+# Per-symbol slippage overrides (BP = basis points)
+# Reject thin/wide-spread pairs entirely or set realistic caps
+symbol_slippage_overrides:
+  # Liquid majors - tight caps
+  BTC/USD: 15
+  BTC/USDT: 15
+  ETH/USD: 20
+  ETH/USDT: 20
+  SOL/USD: 25
+  SOL/USDT: 25
+  AVAX/USD: 30
+  LINK/USD: 30
+  ADA/USD: 30
+  DOT/USD: 30
+  MATIC/USD: 30
+  LTC/USD: 30
+
+  # Thin meme/micro-caps - extreme caps or blacklist
+  SHIB/USD: 200    # Allows detection but economics will kill it
+  BONK/USD: 200
+  VTHO/USD: 200
+  TRUMP/USD: 200
+  FLOKI/USD: 200
+
+# Whitelist: only search triangles involving these bases
+allowed_base_currencies:
+  - USD
+  - USDT
+  - USDC
+
+# Whitelist: only search triangles with these symbols
+allowed_symbols:
+  - BTC
+  - ETH
+  - SOL
+  - ADA
+  - AVAX
+  - LINK
+  - DOT
+  - MATIC
+  - LTC
+
+# Blacklist: never trade these pairs (alternative to slippage override)
+# blacklisted_pairs:
+#   - SHIB/USD
+#   - BONK/USD
+#   - VTHO/USD
+
+# ==== CAPITAL ALLOCATION ====
+capital_allocation:
+  mode: fixed_amount
+  amount: 1000                        # Start with $1k per trade
+  max_allocation: 5000                # Cap at $5k if adaptive sizing is enabled
+
+# ==== DEPTH-AWARE SIZING ====
+# Require top-of-book depth >= N × trade size at each leg
+order_book_depth:
+  enabled: true
+  required_depth_multiplier: 5.0     # Depth must be 5x trade size
+  depth_pct_of_liquidity: 0.20       # Size ≤ 20% of visible depth at cap
+  max_quote_staleness_ms: 300        # Reject quotes older than 300ms
+
+# ==== RISK CONTROLS ====
+risk_controls:
+  max_open_cycles: 3
+  stop_after_consecutive_losses: 5
+  slippage_cooldown_seconds: 30      # Cool down after slippage rejection
+  enable_latency_checks: true
+  enable_slippage_checks: true
+  enable_kill_switch: true
+  max_position_size: 5000
+  daily_loss_limit: 500
+
+# ==== FEES ====
+# BinanceUS: ~0.10% taker, ~0.05% maker (VIP0)
+fees:
+  taker_bps: 10
+  maker_bps: 5
+
+# ==== ORDER CONFIG ====
+order:
+  type: market                       # Taker IOC orders
+  allow_partial_fills: true
+  min_partial_fill_percentage: 0.95
+  max_retries: 2
+  retry_delay_ms: 100
+  monitoring:
+    initial_delay_ms: 50
+    max_delay_ms: 2000
+    backoff_multiplier: 2.0
+
+  # Price limits: only fill within slippage cap
+  use_limit_as_safety: true          # Place IOC limit orders at cap price
+
+# ==== EXECUTION MODE ====
+execution:
+  mode: paper
+  paper:
+    fee_bps: 10                      # Match taker fees
+    fill_ratio: 0.95                 # 95% fill probability
+    spread_padding_bps: 2            # Add 2bp to simulate bid-ask
+    initial_balances:
+      USD: 50000
+      BTC: 0.5
+      ETH: 5.0
+    random_seed: 42
+
+    # Realistic slippage model
+    slippage_model:
+      base_slippage_bps: 5           # Base slippage
+      size_impact_coefficient: 0.002 # Impact per $1k
+      max_slippage_bps: 150          # Cap at 1.5%
+
+    # Market impact (scales with size)
+    market_impact:
+      enabled: true
+      impact_coefficient: 0.5        # 0.5bp per $1k notional
+      max_impact_bps: 50
+
+# ==== SIMULATION ====
+simulation:
+  enable: true
+  book_depth_levels: 5               # Use L2 top 5 levels
+  latency_ms: 150                    # Model 150ms round-trip
+
+# ==== OBSERVABILITY ====
+observability:
+  logging:
+    level: INFO
+    trade_csv: logs/cex_optimized_trades.csv
+    risk_json: logs/cex_risk_events.json
+    structured_format: true
+    include_metadata: true
+  metrics:
+    enabled: true
+    port: 8001
+    path: /metrics
+
+# ==== RECONCILIATION ====
+reconciliation:
+  partial_fills:
+    enabled: true
+    hedge_threshold_bps: 20          # Hedge if unfilled leg > 20bp
+    cancel_threshold_bps: 50         # Cancel if > 50bp adverse
+    max_wait_time_ms: 2000
+
+  position_tracking:
+    enabled: true
+    tolerance_bps: 10
+    reconcile_on_cycle_end: true
+
+  slippage_decisions:
+    hedge_on_high_slippage: true
+    cancel_on_extreme_slippage: true
+    dynamic_thresholds: true
+
+# ==== PANIC SELL (Emergency unwind) ====
+panic_sell:
+  enabled: true
+  base_currencies: [USD, USDT, USDC]
+  max_slippage_bps: 500              # Accept 5% slippage in panic mode
+  use_enhanced_routing: true
