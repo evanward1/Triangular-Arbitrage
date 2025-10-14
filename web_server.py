@@ -30,6 +30,9 @@ from dex.live_costs import compute_costs_for_route
 # Import single source of truth for opportunity math
 from dex.opportunity_math import compute_opportunity_breakdown
 
+# Import route deduplication
+from dex.route_deduplication import RouteDeduplicator
+
 # Try to import Web3 - optional dependency
 try:
     from web3 import Web3
@@ -1018,6 +1021,13 @@ async def run_dex_scanner():
         rpc_client = MockRPCClient()
         executor = DexExecutor(rpc_client, dex_state.mode)
 
+        # Initialize route deduplicator (prevents repeated execution of same opportunity)
+        deduplicator = RouteDeduplicator(
+            route_cooldown_sec=60.0,  # 60 second cooldown between same route executions
+            hysteresis_addl_net_pct=0.05,  # Need +0.05% improvement to re-trigger
+            fingerprint_ttl_sec=60.0,  # Remember fingerprints for 60 seconds
+        )
+
         # Initialize decision engine with config (convert bps to percent)
         dex_state.decision_engine = DecisionEngine(
             {
@@ -1219,8 +1229,46 @@ async def run_dex_scanner():
 
                 # Execute only if decision is EXECUTE
                 if decision.action == "EXECUTE":
+                    # Check deduplication before executing
+                    # Create route_id and fingerprint
+                    pool_addresses = [leg.get("pool", "") for leg in opp.legs]
+                    route_id = deduplicator.create_route_id(opp.path, pool_addresses)
+                    fingerprint = deduplicator.create_fingerprint(
+                        route_id=route_id,
+                        block_number=scan_count,  # Use scan count as proxy for block
+                        gross_bps=opp.gross_bps,
+                        fee_bps=opp.fee_bps,
+                        gas_usd=float(breakdown.gas_usd),
+                    )
+
+                    # Check if should execute
+                    should_execute, skip_reason = deduplicator.should_execute(
+                        route_id=route_id,
+                        fingerprint=fingerprint,
+                        block_number=scan_count,
+                        net_pct=opp.net_pct,
+                        now=time.time(),
+                    )
+
+                    if not should_execute:
+                        # Log skip with reason
+                        dex_state.add_log(f"⏭️  SKIP: {skip_reason}")
+                        # Add equity point to keep chart alive
+                        dex_state.add_equity_point(current_equity, cumulative_pnl)
+                        continue  # Skip this opportunity
+
+                    # Execute the opportunity
                     dex_state.add_log(f"Executing opportunity: {path_str}")
                     fill = await executor.execute(opp)
+
+                    # Record successful execution in deduplicator
+                    deduplicator.record_execution(
+                        route_id=route_id,
+                        fingerprint=fingerprint,
+                        block_number=scan_count,
+                        net_pct=opp.net_pct,
+                        now=time.time(),
+                    )
 
                     # Update equity and cumulative PnL
                     current_equity += fill.pnl_usd
