@@ -208,7 +208,8 @@ function DexMevDashboard() {
             min_profit_threshold_bps: parseFloat(config.min_profit_threshold_bps),
             slippage_floor_bps: parseFloat(config.slippage_floor_bps),
             expected_maker_legs: parseInt(config.expected_maker_legs),
-            gas_model: config.gas_model
+            gas_model: config.gas_model,
+            chain_id: parseInt(config.chain_id)
           }
         })
       });
@@ -293,7 +294,17 @@ function DexMevDashboard() {
     }
   };
 
-  const chainName = status.chain_id === 1 ? 'Ethereum' : `Chain ${status.chain_id}`;
+  // Map chain IDs to network names
+  const getChainName = (chainId) => {
+    const chainMap = {
+      1: 'Ethereum',
+      137: 'Polygon',
+      42161: 'Arbitrum'
+    };
+    return chainMap[chainId] || `Chain ${chainId}`;
+  };
+
+  const chainName = getChainName(status.chain_id);
 
   // Helper to get profit color class
   const getProfitColorClass = (netBps) => {
@@ -558,27 +569,27 @@ function DexMevDashboard() {
                 >
                   Expected Gain (before costs) {sortField === 'gross_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
-                <th title="Exchange fees charged by the trading platforms (typically 0.3% per swap)">Exchange Fees</th>
+                <th title="Trading fees = what exchanges charge">Trading Fees</th>
                 <th
                   onClick={() => toggleSort('slip_bps')}
                   style={{cursor: 'pointer'}}
-                  title="Price cushion to protect against small market movements while trading"
+                  title="Safety margin = extra room for small price moves"
                 >
-                  Price Cushion {sortField === 'slip_bps' && (sortDesc ? '▼' : '▲')}
+                  Safety Margin {sortField === 'slip_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
                 <th
                   onClick={() => toggleSort('gas_bps')}
                   style={{cursor: 'pointer'}}
-                  title="Network fee to execute this trade on the blockchain"
+                  title="Blockchain fee = the cost to submit the trade"
                 >
-                  Network Fee {sortField === 'gas_bps' && (sortDesc ? '▼' : '▲')}
+                  Blockchain Fee {sortField === 'gas_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
                 <th
                   onClick={() => toggleSort('net_bps')}
                   style={{cursor: 'pointer'}}
-                  title="Final expected gain after all costs - this is your actual profit"
+                  title="Your expected profit = price difference minus all costs"
                 >
-                  Final Expected Gain {sortField === 'net_bps' && (sortDesc ? '▼' : '▲')}
+                  Your Expected Profit {sortField === 'net_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
                 <th title="Amount of money being traded">Trade Amount</th>
                 <th title="When this opportunity was detected">Detected At</th>
@@ -586,8 +597,6 @@ function DexMevDashboard() {
             </thead>
             <tbody>
               {sortOpportunities(opportunities).map((opp) => {
-                // Calculate fees: typically 0.3% per leg, varies by pool
-                const estimatedFeesBps = opp.path.length > 1 ? (opp.path.length - 1) * 30 : 0;
                 return (
                   <tr
                     key={opp.id}
@@ -595,21 +604,21 @@ function DexMevDashboard() {
                     className={`${selectedOpp?.id === opp.id ? 'selected' : ''} ${getProfitColorClass(opp.net_bps)}`}
                   >
                     <td className="path-cell">{opp.path.join(' → ')}</td>
-                    <td className="positive" title={`${formatPercent(opp.gross_bps)} (approximately ${formatUSD(opp.gross_bps * opp.size_usd / 10000)})`}>
+                    <td className="positive" title={`${opp.gross_bps.toFixed(1)} bps`}>
                       {formatPercent(opp.gross_bps)}
                     </td>
-                    <td title={`Estimated exchange fees: ${formatPercent(estimatedFeesBps)}`}>
-                      {formatPercent(estimatedFeesBps)}
+                    <td title={`${opp.fee_bps.toFixed(1)} bps`}>
+                      {formatPercent(opp.fee_bps)}
                     </td>
-                    <td title={`Price cushion: ${formatPercent(opp.slip_bps)} (approximately ${formatUSD(opp.slip_bps * opp.size_usd / 10000)})`}>
+                    <td title={`${opp.slip_bps.toFixed(1)} bps`}>
                       {formatPercent(opp.slip_bps)}
                     </td>
-                    <td title={`Network fee: ${formatPercent(opp.gas_bps)} (approximately ${formatUSD(opp.gas_bps * opp.size_usd / 10000)})`}>
+                    <td title={`${opp.gas_bps.toFixed(1)} bps`}>
                       {formatPercent(opp.gas_bps)}
                     </td>
                     <td
                       className={opp.net_bps >= 0 ? 'positive' : 'negative'}
-                      title={`Final expected gain: ${formatPercent(opp.net_bps)} (approximately ${formatUSD(opp.net_bps * opp.size_usd / 10000)})`}
+                      title={`${opp.net_bps.toFixed(1)} bps`}
                     >
                       <strong>{formatPercent(opp.net_bps)}</strong>
                     </td>
@@ -655,21 +664,21 @@ function DexMevDashboard() {
                 </div>
                 <div className="cost-separator">Minus costs:</div>
                 <div className="cost-line indent">
-                  <span className="cost-label">Exchange fees:</span>
+                  <span className="cost-label">Trading fees:</span>
                   <span className="cost-value negative">
-                    {formatPercent((selectedOpp.path.length - 1) * 30)}
-                    <span className="usd-equiv">({formatUSD(((selectedOpp.path.length - 1) * 30) * selectedOpp.size_usd / 10000)})</span>
+                    {formatPercent(selectedOpp.fee_bps)}
+                    <span className="usd-equiv">({formatUSD(selectedOpp.fee_bps * selectedOpp.size_usd / 10000)})</span>
                   </span>
                 </div>
                 <div className="cost-line indent">
-                  <span className="cost-label">Price cushion:</span>
+                  <span className="cost-label">Safety margin:</span>
                   <span className="cost-value negative">
                     {formatPercent(selectedOpp.slip_bps)}
                     <span className="usd-equiv">({formatUSD(selectedOpp.slip_bps * selectedOpp.size_usd / 10000)})</span>
                   </span>
                 </div>
                 <div className="cost-line indent">
-                  <span className="cost-label">Network fee:</span>
+                  <span className="cost-label">Blockchain fee:</span>
                   <span className="cost-value negative">
                     {formatPercent(selectedOpp.gas_bps)}
                     <span className="usd-equiv">({formatUSD(selectedOpp.gas_bps * selectedOpp.size_usd / 10000)})</span>

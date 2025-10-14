@@ -24,6 +24,18 @@ from pydantic import BaseModel
 # Import DecisionEngine for explicit trade execution decisions
 from decision_engine import DecisionEngine
 
+# Import live cost computation
+from dex.live_costs import compute_costs_for_route
+
+# Try to import Web3 - optional dependency
+try:
+    from web3 import Web3
+
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    Web3 = None
+
 # ============================================================================
 # Mode Enum - Single Source of Truth
 # ============================================================================
@@ -414,9 +426,15 @@ class DexOpportunity(BaseModel):
     id: str
     path: List[str]
     gross_bps: float
-    net_bps: float
-    gas_bps: float
-    slip_bps: float
+    gross_pct: float  # gross_bps / 100
+    fee_bps: float  # Exchange fees (e.g., 0.30% per swap)
+    fee_pct: float  # fee_bps / 100
+    slip_bps: float  # Slippage estimate
+    slip_pct: float  # slip_bps / 100
+    gas_bps: float  # Gas cost as basis points of trade size
+    gas_pct: float  # gas_bps / 100
+    net_bps: float  # Net profit after all costs
+    net_pct: float  # net_bps / 100
     size_usd: float
     legs: List[Dict[str, Any]]
     ts: float
@@ -539,8 +557,9 @@ class DexStateManager:
                 TradingMode.PAPER_LIVE_CHAIN if config.paper else TradingMode.LIVE
             )
 
+        # Persist chain_id from UI selection
         if config.chain_id is not None:
-            self.chain_id = config.chain_id
+            self.chain_id = int(config.chain_id)
         if config.rpc_url is not None:
             self.config["rpc_url"] = config.rpc_url
         if config.gas_oracle is not None:
@@ -962,6 +981,27 @@ async def run_dex_scanner():
         scan_count = 0
         current_equity = 1000.0
 
+        # Initialize Web3 connection if ETH_RPC_URL is available
+        web3_instance = None
+        eth_rpc_url = os.getenv("ETH_RPC_URL")
+        if WEB3_AVAILABLE and eth_rpc_url:
+            try:
+                web3_instance = Web3(Web3.HTTPProvider(eth_rpc_url))
+                if web3_instance.is_connected():
+                    logger.info(f"Connected to Ethereum RPC: {eth_rpc_url}")
+                    dex_state.add_log(f"🔗 Connected to {eth_rpc_url[:30]}...")
+                else:
+                    logger.warning("Web3 initialized but not connected")
+                    web3_instance = None
+            except Exception as e:
+                logger.warning(f"Failed to initialize Web3: {e}")
+                web3_instance = None
+        else:
+            if not WEB3_AVAILABLE:
+                logger.info("Web3.py not installed - using mock costs")
+            elif not eth_rpc_url:
+                logger.info("No ETH_RPC_URL set - using mock costs")
+
         # Initialize RPC client and executor
         rpc_client = MockRPCClient()
         executor = DexExecutor(rpc_client, dex_state.mode)
@@ -977,64 +1017,126 @@ async def run_dex_scanner():
         )
 
         mode_text = (
-            "PAPER (Live Chain)"
+            "Test Mode (Live Data)"
             if dex_state.mode == TradingMode.PAPER_LIVE_CHAIN
-            else "LIVE"
+            else "LIVE Trading"
         )
+        mode_icon = "🧪" if dex_state.mode == TradingMode.PAPER_LIVE_CHAIN else "⚡"
         logger.info(f"DEX scanner starting in {dex_state.mode.value} mode")
-        dex_state.add_log(f"Scanner started in {mode_text} mode")
+        dex_state.add_log(f"{mode_icon} Started in {mode_text}")
         dex_state.add_log(
-            f"Scan interval: {dex_state.scan_interval_sec}s, Size: ${dex_state.config['size_usd']}"
+            f"⚙️  Checking every {dex_state.scan_interval_sec}s • "
+            f"Trade size ${dex_state.config['size_usd']:.0f}"
         )
+
+        # Seed equity series with starting capital
+        dex_state.add_equity_point(current_equity)
 
         while dex_state.running:
             scan_count += 1
             dex_state.last_scan_ts = time.time()
 
+            # Simulate pool discovery (in production, would query chain)
+            dex_state.pools_loaded = 125
+
             # Log scan start
             if scan_count % 5 == 1:  # Log every 5th scan to avoid spam
                 dex_state.add_log(
-                    f"Scan #{scan_count}: Checking {dex_state.pools_loaded} pools"
+                    f"🔍 Scan #{scan_count}: Watching {dex_state.pools_loaded} markets"
                 )
-
-            # Simulate pool discovery (in production, would query chain)
-            dex_state.pools_loaded = 125
 
             # Mock: Generate sample opportunity every 3rd scan
             if scan_count % 3 == 0:
                 # In production, this would come from real pool data analysis
+                # Build legs with DEX metadata for cost computation
+                legs = [
+                    {
+                        "pair": "USDC/WETH",
+                        "side": "buy",
+                        "price": 2500.0,
+                        "liq_usd": 50000.0,
+                        "slip_bps_est": 0.5,
+                        "dex": "uniswap_v2",
+                        "type": "v2",
+                        "pool": "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc",  # Mock address
+                        "token_in": "USDC",
+                        "token_out": "WETH",
+                    },
+                    {
+                        "pair": "WETH/DAI",
+                        "side": "sell",
+                        "price": 2505.0,
+                        "liq_usd": 45000.0,
+                        "slip_bps_est": 1.0,
+                        "dex": "uniswap_v2",
+                        "type": "v2",
+                        "pool": "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11",  # Mock address
+                        "token_in": "WETH",
+                        "token_out": "DAI",
+                    },
+                    {
+                        "pair": "DAI/USDC",
+                        "side": "sell",
+                        "price": 1.001,
+                        "liq_usd": 60000.0,
+                        "slip_bps_est": 0.5,
+                        "dex": "uniswap_v2",
+                        "type": "v2",
+                        "pool": "0xAE461cA67B15dc8dc81CE7615e0320dA1A9aB8D5",  # Mock address
+                        "token_in": "DAI",
+                        "token_out": "USDC",
+                    },
+                ]
+
+                # Compute costs using live_costs module (or mocks if no Web3)
+                size_usd = dex_state.config["size_usd"]
+                costs = compute_costs_for_route(
+                    web3=web3_instance,  # None if no RPC URL
+                    route_legs=legs,
+                    size_usd=size_usd,
+                    eth_usd=2000.0,  # ETH price estimate
+                )
+
+                # Extract cost components from result (both bps and pct)
+                fee_bps = costs["fee_bps"]
+                fee_pct = costs["fee_pct"]
+                slip_bps = costs["slip_bps"]
+                slip_pct = costs["slip_pct"]
+                gas_bps = costs["gas_bps"]
+                gas_pct = costs["gas_pct"]
+
+                # Mock gross profit (in production, from price feed)
+                # Set high enough to be profitable after costs
+                # (fees ~90 bps + slip ~2 bps + gas ~18 bps = 110 bps)
+                gross_bps = 125.0  # 1.25% gross profit
+                gross_pct = gross_bps / 100.0
+                net_bps = gross_bps - fee_bps - slip_bps - gas_bps
+                net_pct = net_bps / 100.0
+
                 opp = DexOpportunity(
                     id=f"dexop_{scan_count}",
                     path=["USDC", "WETH", "DAI"],
-                    gross_bps=25.0,
-                    net_bps=5.5,
-                    gas_bps=18.0,
-                    slip_bps=1.5,
-                    size_usd=dex_state.config["size_usd"],
-                    legs=[
-                        {
-                            "pair": "USDC/WETH",
-                            "side": "buy",
-                            "price": 2500.0,
-                            "liq_usd": 50000.0,
-                            "slip_bps_est": 0.5,
-                        },
-                        {
-                            "pair": "WETH/DAI",
-                            "side": "sell",
-                            "price": 2505.0,
-                            "liq_usd": 45000.0,
-                            "slip_bps_est": 1.0,
-                        },
-                    ],
+                    gross_bps=gross_bps,
+                    gross_pct=gross_pct,
+                    fee_bps=fee_bps,
+                    fee_pct=fee_pct,
+                    slip_bps=slip_bps,
+                    slip_pct=slip_pct,
+                    gas_bps=gas_bps,
+                    gas_pct=gas_pct,
+                    net_bps=net_bps,
+                    net_pct=net_pct,
+                    size_usd=size_usd,
+                    legs=legs,
                     ts=time.time(),
                 )
                 dex_state.add_opportunity(opp)
 
                 # Log opportunity found
                 path_str = " → ".join(opp.path)
+                profit_sign = "+" if opp.net_bps >= 0 else ""
                 dex_state.add_log(
-                    f"Opportunity found: {path_str} | Net: +{opp.net_bps:.2f} bps"
+                    f"💡 Found: {path_str} (Net: {profit_sign}{opp.net_bps / 100:.3f}%)"
                 )
 
                 # Broadcast opportunity
@@ -1042,14 +1144,11 @@ async def run_dex_scanner():
                     {"type": "opportunity", "data": opp.model_dump()}
                 )
 
-                # Evaluate opportunity with DecisionEngine (convert bps to percent)
-                # For DEX: fees are already baked into gross_bps from the swap math
-                # Typical 0.30% per leg * 3 legs = 0.90% total fees for triangular arb
-                # We show this explicitly so the decision log is accurate
-                fees_pct = 0.90  # 0.30% * 3 legs typical for Uniswap V2
+                # Evaluate opportunity with DecisionEngine
+                # Use exact costs from the opportunity (single source of truth)
                 decision = dex_state.decision_engine.evaluate_opportunity(
                     gross_pct=opp.gross_bps / 100.0,
-                    fees_pct=fees_pct,
+                    fees_pct=opp.fee_bps / 100.0,  # Use opportunity's fee_bps
                     slip_pct=opp.slip_bps / 100.0,
                     gas_pct=opp.gas_bps / 100.0,
                     size_usd=opp.size_usd,
@@ -1057,13 +1156,37 @@ async def run_dex_scanner():
                     has_gas_estimate=True,  # Mock always has gas estimates
                 )
 
-                # Log the decision
+                # Log the decision (simplified for user-friendly display)
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 decision_log = dex_state.decision_engine.format_decision_log(
                     decision, timestamp
                 )
-                logger.info(decision_log)
-                dex_state.add_log(decision_log)
+                logger.info(decision_log)  # Keep detailed log in server logs
+
+                # Simplified user-facing log
+                metrics = (
+                    decision.metrics
+                    if hasattr(decision.metrics, "__getitem__")
+                    else decision.metrics.__dict__
+                )
+                if decision.action == "EXECUTE":
+                    dex_state.add_log(
+                        f"✅ EXECUTE: Net {metrics['net_pct']:.3f}% "
+                        f"(Gross {metrics['gross_pct']:.3f}% - "
+                        f"Fees {metrics['fees_pct']:.3f}% - "
+                        f"Gas {metrics['gas_pct']:.3f}%)"
+                    )
+                else:
+                    reason_summary = (
+                        decision.reasons[0] if decision.reasons else "Unknown"
+                    )
+                    # Simplify threshold message
+                    if "threshold" in reason_summary:
+                        dex_state.add_log(
+                            f"⏭️  SKIP: Net {metrics['net_pct']:.3f}% below minimum target"
+                        )
+                    else:
+                        dex_state.add_log(f"⏭️  SKIP: {reason_summary}")
 
                 # Record decision
                 dex_state.add_decision(decision.to_dict())
@@ -1092,11 +1215,12 @@ async def run_dex_scanner():
                     )
 
                     # Log fill result
-                    mode_label = "Paper" if fill.paper else "Live"
+                    mode_icon = "📝" if fill.paper else "💰"
                     pnl_sign = "+" if fill.pnl_usd >= 0 else ""
+                    pnl_pct = fill.net_bps / 100
                     dex_state.add_log(
-                        f"{mode_label} fill: {pnl_sign}${fill.pnl_usd:.2f} "
-                        f"({pnl_sign}{fill.net_bps:.2f} bps) | Equity: ${current_equity:.2f}"
+                        f"{mode_icon} Trade completed: {pnl_sign}${fill.pnl_usd:.2f} "
+                        f"({pnl_sign}{pnl_pct:.3f}%) • Balance: ${current_equity:.2f}"
                     )
 
                     # Broadcast fill
@@ -1104,11 +1228,8 @@ async def run_dex_scanner():
                         {"type": "fill", "data": fill.model_dump()}
                     )
                 else:
-                    # Log skip with reasons
-                    reasons_str = ", ".join(decision.reasons)
-                    dex_state.add_log(
-                        f"Skipping opportunity: {path_str} | Reasons: {reasons_str}"
-                    )
+                    # Add equity point even when skipping to keep chart alive
+                    dex_state.add_equity_point(current_equity)
 
             # Broadcast status update
             await dex_state.broadcast_ws(
@@ -1120,7 +1241,7 @@ async def run_dex_scanner():
 
     except asyncio.CancelledError:
         logger.info("DEX scanner stopped")
-        dex_state.add_log("Scanner stopped")
+        dex_state.add_log("🛑 Scanner stopped")
         raise
     except Exception as e:
         logger.error(f"DEX scanner error: {e}", exc_info=True)
