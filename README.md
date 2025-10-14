@@ -61,6 +61,43 @@ python web_server.py
 
 ## Configuration
 
+### Production Strategy Configuration
+
+For live trading, use the production example configuration:
+
+```bash
+# Copy the production example
+cp configs/strategies/strategy_production_example.yaml configs/strategies/my_strategy.yaml
+
+# Edit your strategy
+nano configs/strategies/my_strategy.yaml
+```
+
+**Key Configuration Options**:
+
+```yaml
+# Price Mode - Use bid/ask for more accurate profit estimation
+use_bid_ask: true  # Recommended for live trading (more conservative)
+                   # Set to false to use last price (faster but less accurate)
+
+# Profit Thresholds
+min_profit_bps: 20          # Minimum net profit (0.20% = 20 basis points)
+max_slippage_bps: 30        # Maximum allowed slippage per leg
+max_leg_latency_ms: 3000    # Maximum execution time per leg
+
+# Safety Margins
+safety_margin_bps: 10       # Extra buffer for market fluctuations
+spread_buffer_bps: 5        # Additional buffer for wide spreads
+
+# Feature Flags - Disable experimental features
+feature_flags:
+  enable_dex_arbitrage: false    # Only enable if fully tested
+  enable_mev_solver: false       # Only enable if ready
+  enable_precomputed_cycles: false  # Use cycle files for speed
+```
+
+### Environment Variables
+
 Edit `.env` for basic settings:
 
 ```bash

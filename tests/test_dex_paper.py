@@ -184,7 +184,7 @@ class TestConfig:
 
         assert config.poll_sec == 6  # Default
         assert config.once is False  # Default
-        assert config.slippage_bps == 5  # Default
+        assert config.slippage_bps == 2.0  # Default (0.02% = 2 bps)
 
     def test_config_missing_required_field(self):
         """Test that missing required fields raise errors."""

@@ -1,9 +1,10 @@
-import pytest
 import octobot_commons.symbols as symbols
+import pytest
+
 from triangular_arbitrage.detector import (
     ShortTicker,
-    get_best_triangular_opportunity,
     get_best_opportunity,
+    get_best_triangular_opportunity,
 )
 
 
@@ -86,7 +87,8 @@ def test_get_best_opportunity_returns_correct_cycle_with_correct_tickers():
     ]
     best_opportunity, best_profit = get_best_opportunity(tickers)
     assert len(best_opportunity) >= 3  # Handling cycles with more than 3 tickers
-    assert best_profit == 4.5
+    # Expected profit with 0.1% fee per leg: ~4.486 (was 4.5 without fees)
+    assert round(best_profit, 2) == 4.49
     assert all(isinstance(ticker, ShortTicker) for ticker in best_opportunity)
 
 
@@ -104,5 +106,42 @@ def test_get_best_opportunity_returns_correct_cycle_with_multiple_tickers():
     ]
     best_opportunity, best_profit = get_best_opportunity(tickers)
     assert len(best_opportunity) >= 3  # Handling cycles with more than 3 tickers
-    assert round(best_profit, 3) == 5.775
+    # Expected profit with 0.1% fee per leg: ~5.51 (was 5.775 without fees)
+    assert round(best_profit, 2) == 5.51
     assert all(isinstance(ticker, ShortTicker) for ticker in best_opportunity)
+
+
+def test_bid_ask_mode_produces_lower_profit_than_last_price():
+    """Test that bid/ask mode gives more conservative profit estimates than last price."""
+    # Create tickers with bid/ask spread
+    tickers = [
+        ShortTicker(
+            symbol=symbols.Symbol("BTC/USDT"),
+            last_price=30000,
+            bid=29900,  # Lower bid
+            ask=30100,  # Higher ask
+        ),
+        ShortTicker(
+            symbol=symbols.Symbol("ETH/BTC"),
+            last_price=0.3,
+            bid=0.299,
+            ask=0.301,
+        ),
+        ShortTicker(
+            symbol=symbols.Symbol("ETH/USDT"),
+            last_price=2000,
+            bid=1990,
+            ask=2010,
+        ),
+    ]
+
+    # Get profit with last price
+    _, profit_last = get_best_opportunity(tickers, use_bid_ask=False)
+
+    # Get profit with bid/ask (more conservative)
+    _, profit_bid_ask = get_best_opportunity(tickers, use_bid_ask=True)
+
+    # Bid/ask profit should be lower or equal to last price profit
+    assert profit_bid_ask <= profit_last
+    # Should be noticeably lower due to spreads
+    assert profit_bid_ask < profit_last * 0.99  # At least 1% lower

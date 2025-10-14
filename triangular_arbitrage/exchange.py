@@ -1,18 +1,19 @@
 # triangular_arbitrage/exchange.py
+"""Exchange data fetching utilities using ccxt."""
 
 import ccxt.async_support as ccxt
 
 
 async def get_exchange_data(exchange_name):
-    """
-    Connects to the specified exchange and fetches the latest market tickers.
-    """
+    """Connect to exchange and fetch latest market tickers."""
     # --- defensive check ---
     if not isinstance(exchange_name, str):
         from .exceptions import ValidationError
 
         raise ValidationError(
-            f"FATAL: The exchange name must be a string (e.g., 'coinbase'), but received an object of type {type(exchange_name).__name__}."
+            f"FATAL: The exchange name must be a string "
+            f"(e.g., 'coinbase'), but received type "
+            f"{type(exchange_name).__name__}."
         )
 
     # Dynamically get the exchange class from the ccxt library
@@ -20,7 +21,8 @@ async def get_exchange_data(exchange_name):
         from .exceptions import ExchangeError
 
         raise ExchangeError(
-            f"FATAL: The exchange '{exchange_name}' is not supported by the ccxt library.",
+            f"FATAL: The exchange '{exchange_name}' is not supported "
+            f"by the ccxt library.",
             exchange=exchange_name,
         )
 
@@ -31,7 +33,7 @@ async def get_exchange_data(exchange_name):
 
     try:
         # Load all available markets/trading pairs from the exchange
-        markets = await exchange.load_markets()
+        await exchange.load_markets()
 
         # Fetch the latest tickers for all markets
         tickers = await exchange.fetch_tickers()
@@ -42,8 +44,7 @@ async def get_exchange_data(exchange_name):
         return tickers, exchange_time
 
     except Exception as e:
-        # If something goes wrong, close the connection and raise the error.
-        await exchange.close()
+        # If something goes wrong, raise the error (finally will close)
         raise e
     finally:
         # Always ensure the connection to the exchange is closed gracefully
