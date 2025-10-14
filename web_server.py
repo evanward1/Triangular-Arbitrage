@@ -1022,10 +1022,12 @@ async def run_dex_scanner():
         executor = DexExecutor(rpc_client, dex_state.mode)
 
         # Initialize route deduplicator (prevents repeated execution of same opportunity)
+        # Paper mode: Use fingerprint dedup only, no hysteresis/cooldown
+        # (In production, restore hysteresis_addl_net_pct=0.05 and route_cooldown_sec=60.0)
         deduplicator = RouteDeduplicator(
-            route_cooldown_sec=60.0,  # 60 second cooldown between same route executions
-            hysteresis_addl_net_pct=0.05,  # Need +0.05% improvement to re-trigger
-            fingerprint_ttl_sec=60.0,  # Remember fingerprints for 60 seconds
+            route_cooldown_sec=0.0,  # No cooldown in paper mode
+            hysteresis_addl_net_pct=0.00,  # No hysteresis (rely on fingerprint dedup only)
+            fingerprint_ttl_sec=10.0,  # Short fingerprint memory for paper mode
         )
 
         # Initialize decision engine with config (convert bps to percent)
@@ -1131,7 +1133,14 @@ async def run_dex_scanner():
                 # Mock gross profit (in production, from price feed)
                 # Set high enough to be profitable after costs
                 # (fees ~90 bps + safety ~2 bps + gas ~18 bps = 110 bps)
-                gross_bps = 125.0  # 1.25% gross profit
+                # Add realistic variation to simulate market fluctuations
+                import random
+
+                gross_bps = 100.0 + random.uniform(
+                    0, 100
+                )  # 1.00% to 2.00% gross profit
+                # Vary gas cost to simulate network conditions
+                gas_usd = gas_usd * random.uniform(0.5, 2.0)  # ±50% gas variation
 
                 # Use single source of truth for all calculations
                 breakdown = compute_opportunity_breakdown(
