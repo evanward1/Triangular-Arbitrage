@@ -25,7 +25,8 @@ class DexConfig:
         once: If True, run single scan and exit
         usd_token: Symbol of quote token (e.g., "USDC")
         max_position_usd: Max position size in USD
-        slippage_bps: Slippage haircut in basis points
+        price_safety_margin_pct: Safety margin as percent (e.g., 0.02 for 0.02%)
+        apply_safety_per_leg: If True, multiply safety by number of legs
         threshold_net_pct: Minimum net profit threshold (%)
         gas_price_gwei: Gas price for informational display
         gas_limit: Gas limit for informational display
@@ -54,7 +55,20 @@ class DexConfig:
         self.max_position_usd: Decimal = Decimal(
             str(config_dict.get("max_position_usd", 1000))
         )
-        self.slippage_bps: int = config_dict.get("slippage_bps", 5)
+
+        # Safety margin: parse once as percent, support legacy slippage_bps
+        if "price_safety_margin_pct" in config_dict:
+            self.price_safety_margin_pct: float = float(
+                config_dict["price_safety_margin_pct"]
+            )
+        elif "slippage_bps" in config_dict:
+            # Legacy: convert bps to percent
+            self.price_safety_margin_pct: float = config_dict["slippage_bps"] / 100.0
+        else:
+            # Default: 0.02% (2 bps)
+            self.price_safety_margin_pct: float = 0.02
+
+        self.apply_safety_per_leg: bool = config_dict.get("apply_safety_per_leg", False)
         self.threshold_net_pct: float = config_dict.get("threshold_net_pct", 0.0)
 
         # Gas settings (informational)
@@ -174,14 +188,14 @@ class DexConfig:
         return dexes
 
     @property
-    def slippage_pct(self) -> float:
-        """Slippage as percentage."""
-        return self.slippage_bps / 100.0
+    def safety_bps(self) -> float:
+        """Safety margin in basis points (for backward compatibility)."""
+        return self.price_safety_margin_pct * 100.0
 
     @property
-    def slippage_decimal(self) -> Decimal:
-        """Slippage as Decimal for precise math."""
-        return Decimal(self.slippage_bps) / Decimal(10_000)
+    def safety_decimal(self) -> Decimal:
+        """Safety margin as Decimal for precise math."""
+        return Decimal(str(self.price_safety_margin_pct)) / Decimal("100")
 
     @property
     def gas_pct(self) -> float:
@@ -193,10 +207,10 @@ class DexConfig:
     @property
     def breakeven_pct(self) -> float:
         """
-        Breakeven profit threshold accounting for slippage and gas.
+        Breakeven profit threshold accounting for safety margin and gas.
         Gross profit must exceed this to meet net threshold.
         """
-        return self.threshold_net_pct + self.slippage_pct + self.gas_pct
+        return self.threshold_net_pct + self.price_safety_margin_pct + self.gas_pct
 
 
 def load_config(config_path: str) -> DexConfig:

@@ -9,7 +9,8 @@ once: false
 # ===== Trading Parameters =====
 usd_token: "USDC"
 max_position_usd: 1000
-slippage_bps: 5
+price_safety_margin_pct: 0.02  # Safety margin (0.02%)
+apply_safety_per_leg: false  # If true, multiply by number of legs
 threshold_net_pct: 0.0
 
 # ===== Gas Cost (Informational) =====

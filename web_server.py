@@ -457,7 +457,8 @@ class DexFill(BaseModel):
 
 class DexEquityPoint(BaseModel):
     ts: float
-    equity_usd: float
+    equity_usd: float  # Running balance (for internal tracking)
+    cumulative_pnl_usd: float  # Cumulative PnL for chart display
 
 
 class DexConfig(BaseModel):
@@ -584,9 +585,16 @@ class DexStateManager:
         """Add fill to history"""
         self.fills.append(fill)
 
-    def add_equity_point(self, equity_usd: float):
-        """Add equity point to time series"""
-        point = DexEquityPoint(ts=time.time(), equity_usd=equity_usd)
+    def add_equity_point(self, equity_usd: float, cumulative_pnl_usd: float):
+        """Add equity point to time series
+
+        Args:
+            equity_usd: Running balance
+            cumulative_pnl_usd: Cumulative PnL (sum of all trade profits/losses)
+        """
+        point = DexEquityPoint(
+            ts=time.time(), equity_usd=equity_usd, cumulative_pnl_usd=cumulative_pnl_usd
+        )
         self.equity_history.append(point)
 
     def add_log(self, message: str):
@@ -983,6 +991,7 @@ async def run_dex_scanner():
     try:
         scan_count = 0
         current_equity = 1000.0
+        cumulative_pnl = 0.0  # Track cumulative PnL separately from balance
 
         # Initialize Web3 connection if ETH_RPC_URL is available
         web3_instance = None
@@ -1032,8 +1041,8 @@ async def run_dex_scanner():
             f"Trade size ${dex_state.config['size_usd']:.0f}"
         )
 
-        # Seed equity series with starting capital
-        dex_state.add_equity_point(current_equity)
+        # Seed equity series with starting capital (starting PnL is 0)
+        dex_state.add_equity_point(current_equity, cumulative_pnl)
 
         while dex_state.running:
             scan_count += 1
@@ -1102,21 +1111,23 @@ async def run_dex_scanner():
 
                 # Extract cost components from result
                 fee_bps = costs["fee_bps"]
-                slip_bps = costs["slip_bps"]
+                # Use configured safety margin (not computed price impact)
+                # For test mode, use 0.02% (2 bps) as configured value
+                safety_bps = 2.0  # 0.02% configured safety margin
                 gas_usd = (
                     costs["gas_bps"] / 10000.0
                 ) * size_usd  # Convert gas_bps to USD
 
                 # Mock gross profit (in production, from price feed)
                 # Set high enough to be profitable after costs
-                # (fees ~90 bps + slip ~2 bps + gas ~18 bps = 110 bps)
+                # (fees ~90 bps + safety ~2 bps + gas ~18 bps = 110 bps)
                 gross_bps = 125.0  # 1.25% gross profit
 
                 # Use single source of truth for all calculations
                 breakdown = compute_opportunity_breakdown(
                     gross_bps=gross_bps,
                     fee_bps=fee_bps,
-                    safety_bps=slip_bps,  # Map slippage to safety margin
+                    safety_bps=safety_bps,  # Use configured safety margin
                     gas_usd=gas_usd,
                     trade_amount_usd=size_usd,
                 )
@@ -1129,7 +1140,7 @@ async def run_dex_scanner():
                     gross_pct=float(breakdown.gross_pct),
                     fee_bps=fee_bps,
                     fee_pct=float(breakdown.fee_pct),
-                    slip_bps=slip_bps,
+                    slip_bps=safety_bps,  # Use configured safety margin
                     slip_pct=float(breakdown.safety_pct),
                     gas_bps=float(
                         breakdown.gas_pct * 100
@@ -1211,16 +1222,21 @@ async def run_dex_scanner():
                     dex_state.add_log(f"Executing opportunity: {path_str}")
                     fill = await executor.execute(opp)
 
-                    # Update equity
+                    # Update equity and cumulative PnL
                     current_equity += fill.pnl_usd
+                    cumulative_pnl += fill.pnl_usd  # Track cumulative PnL separately
                     dex_state.add_fill(fill)
-                    dex_state.add_equity_point(current_equity)
+                    dex_state.add_equity_point(current_equity, cumulative_pnl)
 
-                    # Broadcast equity update
+                    # Broadcast equity update (now includes cumulative PnL)
                     await dex_state.broadcast_ws(
                         {
                             "type": "equity",
-                            "data": {"ts": time.time(), "equity_usd": current_equity},
+                            "data": {
+                                "ts": time.time(),
+                                "equity_usd": current_equity,
+                                "cumulative_pnl_usd": cumulative_pnl,
+                            },
                         }
                     )
 
@@ -1239,7 +1255,7 @@ async def run_dex_scanner():
                     )
                 else:
                     # Add equity point even when skipping to keep chart alive
-                    dex_state.add_equity_point(current_equity)
+                    dex_state.add_equity_point(current_equity, cumulative_pnl)
 
             # Broadcast status update
             await dex_state.broadcast_ws(

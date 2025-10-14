@@ -635,8 +635,8 @@ function DexMevDashboard() {
                     <td title={`${opp.slip_bps.toFixed(1)} bps`}>
                       {formatPercent(opp.slip_bps)}
                     </td>
-                    <td title={`${opp.gas_bps.toFixed(1)} bps`}>
-                      {formatPercent(opp.gas_bps)}
+                    <td title={`${opp.gas_bps.toFixed(1)} bps = ${formatUSD(opp.gas_bps * opp.size_usd / 10000)}`}>
+                      {formatPercent(opp.gas_bps)} ({formatUSD(opp.gas_bps * opp.size_usd / 10000)})
                     </td>
                     <td
                       className={opp.net_bps >= 0 ? 'positive' : 'negative'}
@@ -760,7 +760,7 @@ function DexMevDashboard() {
                 />
                 <Line
                   type="monotone"
-                  dataKey="equity_usd"
+                  dataKey="cumulative_pnl_usd"
                   stroke="#00ff88"
                   strokeWidth={2}
                   dot={false}
