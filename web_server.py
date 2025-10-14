@@ -1154,7 +1154,7 @@ async def run_dex_scanner():
                 # Create opportunity from breakdown (single source of truth)
                 opp = DexOpportunity(
                     id=f"dexop_{scan_count}",
-                    path=["USDC", "WETH", "DAI"],
+                    path=["USDC", "WETH", "DAI", "USDC"],
                     gross_bps=gross_bps,
                     gross_pct=float(breakdown.gross_pct),
                     fee_bps=fee_bps,
