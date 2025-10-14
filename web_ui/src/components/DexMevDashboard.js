@@ -37,7 +37,7 @@ function DexMevDashboard() {
     size_usd: 1000,
     min_profit_threshold_bps: 0,
     slippage_floor_bps: 5,
-    expected_maker_legs: 2,
+    expected_maker_legs: 0,  // DEX default is 0 (maker legs are a CEX concept)
     gas_model: 'fast',
     mode: 'paper_live_chain',  // paper_live_chain or live
     chain_id: 1
@@ -167,6 +167,8 @@ function DexMevDashboard() {
           });
         } else if (data.type === 'equity') {
           setEquity(prev => [...prev, data.data].slice(-1000));
+        } else if (data.type === 'decision') {
+          setDecisions(prev => [data.data, ...prev].slice(0, 100));
         } else if (data.type === 'log') {
           setLogs(prev => [...prev, data.message].slice(-100));
         }
@@ -249,6 +251,14 @@ function DexMevDashboard() {
     }
   };
 
+  // Helper to convert bps to percent
+  const bpsToPercent = (bps) => (bps / 100).toFixed(2);
+
+  const formatPercent = (bps) => {
+    const pct = bps / 100;
+    return pct >= 0 ? `+${pct.toFixed(2)}%` : `${pct.toFixed(2)}%`;
+  };
+
   const formatBps = (bps) => {
     return bps >= 0 ? `+${bps.toFixed(2)}` : bps.toFixed(2);
   };
@@ -327,26 +337,33 @@ function DexMevDashboard() {
           </div>
 
           <div className="control-section">
-            <label>Min Profit (bps)</label>
+            <label title="Minimum net profit % required to execute a trade">
+              Min Profit (%)
+            </label>
             <input
               type="number"
-              value={config.min_profit_threshold_bps}
-              onChange={(e) => setConfig({...config, min_profit_threshold_bps: parseFloat(e.target.value)})}
+              step="0.01"
+              value={(config.min_profit_threshold_bps / 100).toFixed(2)}
+              onChange={(e) => setConfig({...config, min_profit_threshold_bps: parseFloat(e.target.value) * 100})}
               disabled={running}
             />
           </div>
 
           <div className="control-section">
-            <label>Slippage Floor (bps)</label>
+            <label title="Safety haircut for price slippage during execution">
+              Slippage Haircut (%)
+            </label>
             <input
               type="number"
-              value={config.slippage_floor_bps}
-              onChange={(e) => setConfig({...config, slippage_floor_bps: parseFloat(e.target.value)})}
+              step="0.01"
+              value={(config.slippage_floor_bps / 100).toFixed(2)}
+              onChange={(e) => setConfig({...config, slippage_floor_bps: parseFloat(e.target.value) * 100})}
               disabled={running}
             />
           </div>
 
-          <div className="control-section">
+          <div className="control-section" style={{display: 'none'}}>
+            {/* Hidden for DEX mode - maker legs are a CEX concept */}
             <label>Expected Maker Legs</label>
             <input
               type="number"
@@ -408,12 +425,16 @@ function DexMevDashboard() {
             <span className="status-value">{status.scan_interval_sec}s</span>
           </div>
           <div className="status-item">
-            <span className="status-label">Best Gross:</span>
-            <span className="status-value positive">{formatBps(status.best_gross_bps)} bps</span>
+            <span className="status-label">Best Raw:</span>
+            <span className="status-value positive" title="Best raw profit found (after fees, before slippage and gas)">
+              {formatPercent(status.best_gross_bps)}
+            </span>
           </div>
           <div className="status-item">
             <span className="status-label">Best Net:</span>
-            <span className="status-value positive">{formatBps(status.best_net_bps)} bps</span>
+            <span className="status-value positive" title="Best net profit found (after all costs)">
+              {formatPercent(status.best_net_bps)}
+            </span>
           </div>
           <div className="status-item">
             <span className="status-label">Last Scan:</span>
@@ -485,40 +506,73 @@ function DexMevDashboard() {
             <thead>
               <tr>
                 <th>Path</th>
-                <th onClick={() => toggleSort('gross_bps')} style={{cursor: 'pointer'}}>
-                  Gross {sortField === 'gross_bps' && (sortDesc ? '▼' : '▲')}
+                <th
+                  onClick={() => toggleSort('gross_bps')}
+                  style={{cursor: 'pointer'}}
+                  title="Raw profit after pool fees, before slippage and gas"
+                >
+                  Raw {sortField === 'gross_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
-                <th onClick={() => toggleSort('net_bps')} style={{cursor: 'pointer'}}>
-                  Net {sortField === 'net_bps' && (sortDesc ? '▼' : '▲')}
+                <th title="Estimated pool fees (typically 0.3% per swap)">Fees</th>
+                <th
+                  onClick={() => toggleSort('slip_bps')}
+                  style={{cursor: 'pointer'}}
+                  title="Safety haircut for price movement during execution"
+                >
+                  Slip {sortField === 'slip_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
-                <th onClick={() => toggleSort('gas_bps')} style={{cursor: 'pointer'}}>
+                <th
+                  onClick={() => toggleSort('gas_bps')}
+                  style={{cursor: 'pointer'}}
+                  title="Network transaction cost as % of trade size"
+                >
                   Gas {sortField === 'gas_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
-                <th onClick={() => toggleSort('slip_bps')} style={{cursor: 'pointer'}}>
-                  Slip {sortField === 'slip_bps' && (sortDesc ? '▼' : '▲')}
+                <th
+                  onClick={() => toggleSort('net_bps')}
+                  style={{cursor: 'pointer'}}
+                  title="Final profit after all costs"
+                >
+                  Net {sortField === 'net_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
                 <th>Size</th>
                 <th>Time</th>
               </tr>
             </thead>
             <tbody>
-              {sortOpportunities(opportunities).map((opp) => (
-                <tr
-                  key={opp.id}
-                  onClick={() => setSelectedOpp(opp)}
-                  className={selectedOpp?.id === opp.id ? 'selected' : ''}
-                >
-                  <td className="path-cell">{opp.path.join(' → ')}</td>
-                  <td className="positive">{formatBps(opp.gross_bps)} bps</td>
-                  <td className={opp.net_bps >= 0 ? 'positive' : 'negative'}>
-                    {formatBps(opp.net_bps)} bps
-                  </td>
-                  <td>{formatBps(opp.gas_bps)} bps</td>
-                  <td>{formatBps(opp.slip_bps)} bps</td>
-                  <td>{formatUSD(opp.size_usd)}</td>
-                  <td>{formatTimestamp(opp.ts)}</td>
-                </tr>
-              ))}
+              {sortOpportunities(opportunities).map((opp) => {
+                // Calculate fees: typically 0.3% per leg, varies by pool
+                const estimatedFeesBps = opp.path.length > 1 ? (opp.path.length - 1) * 30 : 0;
+                return (
+                  <tr
+                    key={opp.id}
+                    onClick={() => setSelectedOpp(opp)}
+                    className={selectedOpp?.id === opp.id ? 'selected' : ''}
+                  >
+                    <td className="path-cell">{opp.path.join(' → ')}</td>
+                    <td className="positive" title={`${formatPercent(opp.gross_bps)} ≈ ${formatUSD(opp.gross_bps * opp.size_usd / 10000)}`}>
+                      {formatPercent(opp.gross_bps)}
+                    </td>
+                    <td title={`Estimated ${estimatedFeesBps} bps total`}>
+                      {formatPercent(estimatedFeesBps)}
+                    </td>
+                    <td title={`${formatPercent(opp.slip_bps)} ≈ ${formatUSD(opp.slip_bps * opp.size_usd / 10000)}`}>
+                      {formatPercent(opp.slip_bps)}
+                    </td>
+                    <td title={`${formatPercent(opp.gas_bps)} ≈ ${formatUSD(opp.gas_bps * opp.size_usd / 10000)}`}>
+                      {formatPercent(opp.gas_bps)}
+                    </td>
+                    <td
+                      className={opp.net_bps >= 0 ? 'positive' : 'negative'}
+                      title={`${formatPercent(opp.net_bps)} ≈ ${formatUSD(opp.net_bps * opp.size_usd / 10000)}`}
+                    >
+                      <strong>{formatPercent(opp.net_bps)}</strong>
+                    </td>
+                    <td>{formatUSD(opp.size_usd)}</td>
+                    <td>{formatTimestamp(opp.ts)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {opportunities.length === 0 && (

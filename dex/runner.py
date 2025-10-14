@@ -565,14 +565,19 @@ class DexRunner:
             print("   (no valid cycles found)")
         else:
             for i, row in enumerate(rows[:topn], 1):
-                # Calculate fee percentage (included in gross calculation)
-                # For DEX: each leg has a fee, gross already accounts for it
-                # We need to back-calculate the fee impact
+                # Extract fee info from the row's dexes
+                # Find the pools for this route to get actual fees
+                fees_pct = 0.0
+                for pool in self.pools:
+                    if pool.dex in [row.dexA, row.dexB]:
+                        fees_pct += float(pool.fee * 100)
+                # Since each route uses 2 legs, we take the sum of both pool fees
+                # (typically 0.30% * 2 = 0.60% for Uniswap V2)
+
                 slippage_impact = self.config.slippage_pct
                 gas_impact = (
                     self.config.gas_pct if self.config.gas_cost_usd_override else 0.0
                 )
-                total_costs = slippage_impact + gas_impact
 
                 # Profit icon
                 profit_icon = (
@@ -586,16 +591,25 @@ class DexRunner:
                 else:
                     cycle_str = " → ".join(cycle_parts)
 
+                # Show breakdown: Raw (after fees) − Slippage − Gas = Net
+                # Fees are already baked into Raw, so we show them for clarity
                 print(
                     f"   {profit_icon} {i:2d}. {cycle_str:25s} "
-                    f"Raw: {row.gross_pct:+.2f}%  "
-                    f"Costs: {total_costs:.2f}%  "
-                    f"Net: {row.net_pct:+.2f}%"
+                    f"Raw: {row.gross_pct:+.2f}% (incl. fees {fees_pct:.2f}%)  "
+                    f"− Slip: {slippage_impact:.2f}%  "
+                    f"− Gas: {gas_impact:.2f}%  "
+                    f"= Net: {row.net_pct:+.2f}%"
                 )
 
         # Show why line if no profitable opportunities
         if rows and len(opportunities) == 0:
             best = rows[0]
+
+            # Calculate fees for best route
+            fees_pct = 0.0
+            for pool in self.pools:
+                if pool.dex in [best.dexA, best.dexB]:
+                    fees_pct += float(pool.fee * 100)
 
             # Calculate breakeven gross
             slippage_impact = self.config.slippage_pct
@@ -611,9 +625,9 @@ class DexRunner:
             print(
                 f"   ⚠️  No profitable opportunities found\n"
                 f"   Best route would lose {abs(best.net_pct):.2f}% (need {gross_gap:+.2f}% more to break even)\n"
-                f"   Breakdown: Raw profit {best.gross_pct:+.2f}% - "
-                f"Slippage {slippage_impact:.2f}% - "
-                f"Gas {gas_impact:.2f}%"
+                f"   Breakdown: Raw profit {best.gross_pct:+.2f}% (after {fees_pct:.2f}% fees) − "
+                f"Slippage {slippage_impact:.2f}% − "
+                f"Gas {gas_impact:.2f}% = Net {best.net_pct:+.2f}%"
             )
 
         # Show summary footer
@@ -633,11 +647,17 @@ class DexRunner:
 
     def _print_opportunity(self, row: ArbRow, scan_num: int) -> None:
         """Print a single opportunity (for quiet mode)."""
+        # Calculate fees for this route
+        fees_pct = 0.0
+        for pool in self.pools:
+            if pool.dex in [row.dexA, row.dexB]:
+                fees_pct += float(pool.fee * 100)
+
         print(f"\n✨ OPPORTUNITY FOUND! (Scan {scan_num})")
         print("=" * 80)
         print(f"  {row.cycle}")
         print(
-            f"  Gross: {row.gross_pct:+.2f}% | Slip: {self.config.slippage_pct:.2f}%",
+            f"  Raw: {row.gross_pct:+.2f}% (incl. fees {fees_pct:.2f}%) | Slip: {self.config.slippage_pct:.2f}%",
             end="",
         )
         if self.config.gas_cost_usd_override:

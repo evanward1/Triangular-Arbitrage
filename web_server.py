@@ -1043,9 +1043,13 @@ async def run_dex_scanner():
                 )
 
                 # Evaluate opportunity with DecisionEngine (convert bps to percent)
+                # For DEX: fees are already baked into gross_bps from the swap math
+                # Typical 0.30% per leg * 3 legs = 0.90% total fees for triangular arb
+                # We show this explicitly so the decision log is accurate
+                fees_pct = 0.90  # 0.30% * 3 legs typical for Uniswap V2
                 decision = dex_state.decision_engine.evaluate_opportunity(
                     gross_pct=opp.gross_bps / 100.0,
-                    fees_pct=0.0,  # DEX fees typically in slippage
+                    fees_pct=fees_pct,
                     slip_pct=opp.slip_bps / 100.0,
                     gas_pct=opp.gas_bps / 100.0,
                     size_usd=opp.size_usd,
@@ -1064,6 +1068,11 @@ async def run_dex_scanner():
                 # Record decision
                 dex_state.add_decision(decision.to_dict())
 
+                # Broadcast decision to connected clients
+                await dex_state.broadcast_ws(
+                    {"type": "decision", "data": decision.to_dict()}
+                )
+
                 # Execute only if decision is EXECUTE
                 if decision.action == "EXECUTE":
                     dex_state.add_log(f"Executing opportunity: {path_str}")
@@ -1073,6 +1082,14 @@ async def run_dex_scanner():
                     current_equity += fill.pnl_usd
                     dex_state.add_fill(fill)
                     dex_state.add_equity_point(current_equity)
+
+                    # Broadcast equity update
+                    await dex_state.broadcast_ws(
+                        {
+                            "type": "equity",
+                            "data": {"ts": time.time(), "equity_usd": current_equity},
+                        }
+                    )
 
                     # Log fill result
                     mode_label = "Paper" if fill.paper else "Live"
