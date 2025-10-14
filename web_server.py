@@ -21,6 +21,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, environment variables should be set manually
+
 # Import DecisionEngine for explicit trade execution decisions
 from decision_engine import DecisionEngine
 
@@ -1154,7 +1162,7 @@ async def run_dex_scanner():
                 # Create opportunity from breakdown (single source of truth)
                 opp = DexOpportunity(
                     id=f"dexop_{scan_count}",
-                    path=["USDC", "WETH", "DAI"],
+                    path=["USDC", "WETH", "DAI", "USDC"],
                     gross_bps=gross_bps,
                     gross_pct=float(breakdown.gross_pct),
                     fee_bps=fee_bps,
