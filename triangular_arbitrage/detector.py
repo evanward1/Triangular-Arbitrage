@@ -12,8 +12,16 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import networkx as nx
 
+from triangular_arbitrage.exceptions import (
+    DataError,
+    ExchangeError,
+    NetworkError,
+    ValidationError,
+)
 from triangular_arbitrage.exchange import get_exchange_data
-from triangular_arbitrage.utils import is_positive_number
+from triangular_arbitrage.utils import get_logger, is_positive_number
+
+logger = get_logger(__name__)
 
 # Set decimal precision for high-precision calculations
 getcontext().prec = 50
@@ -44,13 +52,19 @@ class ShortTicker(NamedTuple):
     ask: Optional[float] = None
 
 
-def build_graph(tickers: Dict[str, Dict[str, Any]], trade_fee: float) -> nx.DiGraph:
+def build_graph(
+    tickers: Dict[str, Dict[str, Any]],
+    trade_fee: float,
+    use_bid_ask: bool = False,
+) -> nx.DiGraph:
     """
-    Build a directed graph from exchange tickers with edge weights for arbitrage detection.
+    Build directed graph from tickers with edge weights for arbitrage.
 
     Args:
         tickers: Dictionary of trading pair symbols to ticker data
         trade_fee: Trading fee as a decimal (e.g., 0.001 for 0.1%)
+        use_bid_ask: If True, use bid/ask prices instead of last price
+            (more conservative)
 
     Returns:
         NetworkX directed graph with logarithmic edge weights
@@ -62,25 +76,54 @@ def build_graph(tickers: Dict[str, Dict[str, Any]], trade_fee: float) -> nx.DiGr
     one = Decimal("1")
 
     for symbol, ticker in tickers.items():
-        last_price = ticker.get("last")
-        if not last_price or not is_positive_number(last_price):
+        # Get prices - prefer bid/ask if requested and available
+        if use_bid_ask:
+            # For buying (forward): we pay the ask price
+            # For selling (backward): we receive the bid price
+            ask_price = ticker.get("ask")
+            bid_price = ticker.get("bid")
+
+            # Fall back to last if bid/ask not available
+            if not ask_price or not is_positive_number(ask_price):
+                ask_price = ticker.get("last")
+            if not bid_price or not is_positive_number(bid_price):
+                bid_price = ticker.get("last")
+
+            forward_price = ask_price  # Buying at ask
+            backward_price = bid_price  # Selling at bid
+        else:
+            # Use last price for both directions
+            last_price = ticker.get("last")
+            if not last_price or not is_positive_number(last_price):
+                continue
+            forward_price = last_price
+            backward_price = last_price
+
+        # Skip if we don't have valid prices
+        if not forward_price or not backward_price:
             continue
+        if not is_positive_number(forward_price) or not is_positive_number(
+            backward_price
+        ):
+            continue
+
         try:
             symbol_1, symbol_2 = symbol.split("/")
         except ValueError:
             continue
 
         # Use Decimal for precise calculations
-        price_decimal = Decimal(str(last_price))
+        forward_price_decimal = Decimal(str(forward_price))
+        backward_price_decimal = Decimal(str(backward_price))
 
         # Calculate edge weights with high precision and LRU caching
-        # Forward edge: symbol_2 -> symbol_1 (buying symbol_1 with symbol_2)
-        forward_rate = (one / price_decimal) * (one - fee_decimal)
+        # Forward edge: symbol_2 -> symbol_1 (buying at ask)
+        forward_rate = (one / forward_price_decimal) * (one - fee_decimal)
         # Use cached logarithm for 2-3x speedup on repeated rate values
         forward_weight = -cached_decimal_ln(str(forward_rate))
 
-        # Backward edge: symbol_1 -> symbol_2 (selling symbol_1 for symbol_2)
-        backward_rate = price_decimal * (one - fee_decimal)
+        # Backward edge: symbol_1 -> symbol_2 (selling at bid)
+        backward_rate = backward_price_decimal * (one - fee_decimal)
         backward_weight = -cached_decimal_ln(str(backward_rate))
 
         graph.add_edge(symbol_2, symbol_1, weight=forward_weight)
@@ -91,7 +134,7 @@ def build_graph(tickers: Dict[str, Dict[str, Any]], trade_fee: float) -> nx.DiGr
 
 def find_opportunities(
     graph: nx.DiGraph, owned_assets: Optional[List[str]] = None
-) -> Optional[List[Tuple[str, str]]]:
+) -> Optional[Tuple[List[str], float]]:
     """
     Find the best triangular arbitrage opportunities in the graph.
 
@@ -100,7 +143,7 @@ def find_opportunities(
         owned_assets: Optional list of assets that must be included in the cycle
 
     Returns:
-        List of trading pairs representing the profitable cycle, or None if none found
+        Tuple of (cycle currencies list, profit percentage) or None if none found
     """
     # Track removed edges so we can restore them
     removed_edges = []
@@ -110,7 +153,7 @@ def find_opportunities(
         cycle = None
         try:
             # Find any negative cycle in the graph
-            # We can start from an arbitrary node; the algorithm will find a cycle if one exists
+            # Start from an arbitrary node; algorithm finds cycle if it exists
             if not graph.nodes:
                 break
             start_node = list(graph.nodes)[0]
@@ -157,24 +200,49 @@ async def run_detection(
     owned_assets=None,
     ignored_symbols=None,
     whitelisted_symbols=None,
+    use_bid_ask=False,
 ):
-    """
-    The main function to run the arbitrage detection process. It fetches data,
-    builds the graph, finds opportunities, and prints the results.
+    """Run arbitrage detection process.
+
+    Fetches data, builds graph, finds opportunities, and returns results.
+
+    Args:
+        exchange_name: Name of the exchange to query
+        trade_fee: Trading fee as a decimal
+        owned_assets: Optional list of assets we own (for actionable cycles)
+        ignored_symbols: Optional list of symbols to ignore
+        whitelisted_symbols: Optional list of symbols to whitelist
+        use_bid_ask: If True, use bid/ask prices for conservative estimates
+
+    Returns:
+        Tuple of (cycle, profit_percentage) or None if no opportunity found
+
+    Raises:
+        ValidationError: If exchange_name is invalid
+        ExchangeError: If exchange is not supported
+        NetworkError: If network/API request fails
     """
     if ignored_symbols is None:
         ignored_symbols = []
 
     try:
-        print("  -> Step 1: Fetching market data from exchange...")
+        logger.info("Step 1: Fetching market data from exchange %s...", exchange_name)
         tickers, exchange_time = await get_exchange_data(exchange_name)
-        print(f"  -> Found {len(tickers)} available trading pairs.")
+        logger.info("Found %d available trading pairs.", len(tickers))
 
+    except ValidationError as e:
+        logger.error("Configuration error: %s", e)
+        raise
+    except ExchangeError as e:
+        logger.error("Exchange error for %s: %s", exchange_name, e)
+        raise
     except Exception as e:
-        print(f"Error: Could not fetch data from {exchange_name}. Details: {e}")
-        return None
+        # Catch network and other transient errors
+        error_msg = f"Failed to fetch data from {exchange_name}: {e}"
+        logger.warning(error_msg)
+        raise NetworkError(error_msg, endpoint=exchange_name) from e
 
-    print("  -> Step 2: Building currency graph...")
+    logger.debug("Step 2: Building currency graph...")
     filtered_tickers = {
         s: t
         for s, t in tickers.items()
@@ -183,38 +251,40 @@ async def run_detection(
     }
 
     if not filtered_tickers:
-        print("Error: No valid trading pairs found after filtering.")
-        return None
+        error_msg = "No valid trading pairs found after filtering."
+        logger.warning(error_msg)
+        raise DataError(error_msg, source=exchange_name)
 
-    graph = build_graph(filtered_tickers, trade_fee)
-    print(
-        f"  -> Graph built with {len(graph.nodes)} currencies and {len(graph.edges)} potential trades."
+    graph = build_graph(filtered_tickers, trade_fee, use_bid_ask=use_bid_ask)
+    logger.info(
+        "Graph built with %d currencies and %d potential trades.",
+        len(graph.nodes),
+        len(graph.edges),
     )
 
     search_type = "actionable" if owned_assets else "general"
-    print(f"  -> Step 3: Analyzing graph for {search_type} trading cycles...")
+    logger.debug("Step 3: Analyzing graph for %s trading cycles...", search_type)
     opportunity = find_opportunities(graph, owned_assets)
-    print("  -> Analysis complete.")
+    logger.debug("Analysis complete.")
 
     if opportunity:
         cycle, profit = opportunity
         fee_percentage = trade_fee * 100
 
-        print("\n" + "=" * 70)
         header = (
             f"Actionable Trade Path Found on {exchange_name.capitalize()}"
             if owned_assets
             else f"Profitable Trade Path Found on {exchange_name.capitalize()}"
         )
-        print(header)
-        print(f"(Includes {fee_percentage:.2f}% fee per trade)")
-        print("=" * 70)
+        logger.info("%s", "=" * 70)
+        logger.info(header)
+        logger.info("(Includes %.2f%% fee per trade)", fee_percentage)
+        logger.info("%s", "=" * 70)
 
         status = "Profit" if profit > 0 else "Loss"
-        print(f"\nEstimated {status}: {profit:.4f}%")
-        print(f"  Path: {' -> '.join(cycle)} -> {cycle[0]}")
-
-        print("\n" + "=" * 70 + "\n")
+        logger.info("Estimated %s: %.4f%%", status, profit)
+        logger.info("Path: %s -> %s", " -> ".join(cycle), cycle[0])
+        logger.info("%s", "=" * 70)
         return opportunity
     else:
         message = (
@@ -222,7 +292,7 @@ async def run_detection(
             if owned_assets
             else "No profitable trading cycles found at this time."
         )
-        print(f"\n{message}\n")
+        logger.info(message)
         return None
 
 
@@ -271,7 +341,7 @@ def get_best_triangular_opportunity(
             eth_usdc = ticker_dict.get("ETH/USDC")
 
             # Pattern 1: BTC through USDC to ETH arbitrage
-            # This matches the expected 5.526 calculation: (BTC/USDC * ETH/BTC) / ETH/USDC
+            # Expected 5.526: (BTC/USDC * ETH/BTC) / ETH/USDC
             if btc_usdc and eth_btc and eth_usdc:
                 profit = (
                     btc_usdc.last_price * eth_btc.last_price
@@ -287,14 +357,16 @@ def get_best_triangular_opportunity(
 
 
 def get_best_opportunity(
-    tickers: List[ShortTicker], trade_fee: float = 0.001
+    tickers: List[ShortTicker],
+    trade_fee: float = 0.001,
+    use_bid_ask: bool = False,
 ) -> Tuple[Optional[List[ShortTicker]], float]:
-    """
-    Find the best arbitrage opportunity (may include longer cycles).
+    """Find the best arbitrage opportunity (may include longer cycles).
 
     Args:
         tickers: List of ShortTicker objects
         trade_fee: Trading fee as decimal
+        use_bid_ask: If True, use bid/ask prices instead of last price
 
     Returns:
         Tuple of (list of ShortTicker objects forming the cycle, profit multiplier)
@@ -308,10 +380,15 @@ def get_best_opportunity(
     # Create a dictionary mapping for graph construction
     ticker_data = {}
     for ticker in tickers:
-        ticker_data[str(ticker.symbol)] = {"last": ticker.last_price}
+        ticker_dict = {"last": ticker.last_price}
+        if ticker.bid is not None:
+            ticker_dict["bid"] = ticker.bid
+        if ticker.ask is not None:
+            ticker_dict["ask"] = ticker.ask
+        ticker_data[str(ticker.symbol)] = ticker_dict
 
     # Build graph and find opportunities
-    graph = build_graph(ticker_data, trade_fee)
+    graph = build_graph(ticker_data, trade_fee, use_bid_ask=use_bid_ask)
     opportunity = find_opportunities(graph)
 
     if not opportunity:

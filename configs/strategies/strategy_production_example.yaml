@@ -1,0 +1,178 @@
+# Production Strategy Configuration Example
+# This configuration demonstrates best practices for live trading with:
+# - Bid/ask price mode for conservative profit estimates
+# - Minimum net profit threshold enforcement
+# - Safety margins for spread and slippage
+# - All safety features enabled
+
+name: production_example
+exchange: binance  # or binanceus, coinbase, kraken, etc.
+
+# ====================================================================
+# PRICE MODE - Use bid/ask for more accurate profit estimation
+# ====================================================================
+# When use_bid_ask is true:
+#   - Buy orders use ASK price (what you pay to sellers)
+#   - Sell orders use BID price (what buyers pay you)
+#   - Results in more conservative profit estimates vs last price
+use_bid_ask: true  # Set to false to use last price (faster but less accurate)
+
+# ====================================================================
+# PROFIT THRESHOLDS
+# ====================================================================
+# Minimum net profit after ALL costs (fees + slippage + spread)
+min_profit_bps: 20  # 0.20% minimum net profit (20 basis points)
+
+# Maximum allowed slippage per leg before aborting trade
+max_slippage_bps: 30  # 0.30% max slippage per leg
+
+# Maximum total execution latency per leg
+max_leg_latency_ms: 3000  # 3 seconds max per leg
+
+# ====================================================================
+# SAFETY MARGINS
+# ====================================================================
+# Additional safety buffer subtracted from estimated profit
+# This accounts for:
+#   - Bid-ask spread fluctuations
+#   - Market impact not captured in static quotes
+#   - Network latency effects
+safety_margin_bps: 10  # 0.10% safety buffer (10 basis points)
+
+# Spread buffer - additional pessimistic adjustment for wide spreads
+# Applied when bid-ask spread exceeds threshold
+spread_buffer_bps: 5  # 0.05% extra buffer for wide spreads
+wide_spread_threshold_bps: 20  # Spreads > 0.20% trigger extra buffer
+
+# ====================================================================
+# CAPITAL ALLOCATION
+# ====================================================================
+capital_allocation:
+  mode: fixed_amount
+  amount: 1000  # Start with $1000 per trade
+  max_allocation: 5000  # Cap at $5000 per trade
+
+# ====================================================================
+# RISK CONTROLS
+# ====================================================================
+risk_controls:
+  max_open_cycles: 1  # Only one trade at a time initially
+  stop_after_consecutive_losses: 3  # Stop after 3 losses in a row
+  slippage_cooldown_seconds: 60  # Cool down pairs with slippage violations
+  enable_latency_checks: true
+  enable_slippage_checks: true
+  enable_kill_switch: true
+  max_position_size: 5000
+  daily_loss_limit: 500  # Stop if down $500 in a day
+
+# ====================================================================
+# FEES (adjust per exchange)
+# ====================================================================
+fees:
+  taker_bps: 10  # 0.10% taker fee (Binance VIP 0)
+  maker_bps: 5   # 0.05% maker fee
+
+# ====================================================================
+# ORDER CONFIGURATION
+# ====================================================================
+order:
+  type: market  # Use market orders for speed
+  allow_partial_fills: true
+  min_partial_fill_percentage: 0.95  # Must fill at least 95%
+  max_retries: 2
+  retry_delay_ms: 500
+
+  # Just-in-time revalidation
+  revalidate_before_execution: true  # Re-check profitability before each trade
+  revalidation_timeout_ms: 1000  # Max 1 second for revalidation
+
+# ====================================================================
+# EXECUTION MODE
+# ====================================================================
+execution:
+  mode: paper  # Start with paper mode! Change to 'live' only after extensive testing
+
+  # Paper trading simulation parameters
+  paper:
+    fee_bps: 10
+    fill_ratio: 0.98  # 98% fill probability
+    spread_padding_bps: 2  # Add 2bp to simulate bid-ask
+    initial_balances:
+      USD: 50000
+      BTC: 0.1
+      ETH: 1.0
+    random_seed: 42
+
+# ====================================================================
+# FEATURE FLAGS - Disable incomplete/experimental features
+# ====================================================================
+feature_flags:
+  # DEX/MEV features
+  enable_dex_arbitrage: false  # Set true only if DEX module is complete and tested
+  enable_mev_solver: false     # Set true only if MEV solver is ready
+
+  # Experimental optimizations
+  enable_precomputed_cycles: false  # Set true to use precomputed cycle files
+  enable_ml_scoring: false          # Set true if GNN model is trained
+
+  # Advanced routing
+  enable_multi_exchange: false      # Set true for cross-exchange arb
+  enable_flash_loans: false         # Set true only with proper flash loan setup
+
+# ====================================================================
+# SYMBOL FILTERING
+# ====================================================================
+# Only trade cycles involving these assets (leave empty for all)
+allowed_symbols:
+  - BTC
+  - ETH
+  - SOL
+  - AVAX
+  - LINK
+
+# Only trade cycles that start/end with these currencies
+allowed_base_currencies:
+  - USD
+  - USDT
+  - USDC
+
+# Never trade these pairs (e.g., low liquidity, high fees)
+blacklisted_pairs: []
+
+# ====================================================================
+# PANIC SELL / RECOVERY
+# ====================================================================
+panic_sell:
+  enabled: true
+  base_currencies: [USD, USDT, USDC]
+  max_slippage_bps: 500  # Accept up to 5% slippage in emergency unwind
+  use_enhanced_routing: true
+
+# ====================================================================
+# LOGGING
+# ====================================================================
+logging:
+  level: INFO  # Use DEBUG for development, INFO for production
+  structured_format: true
+  include_metadata: true
+
+# ====================================================================
+# OBSERVABILITY
+# ====================================================================
+observability:
+  metrics:
+    enabled: true
+    port: 8001
+    path: /metrics
+
+# ====================================================================
+# RECONCILIATION
+# ====================================================================
+reconciliation:
+  partial_fills:
+    enabled: true
+    hedge_threshold_bps: 20
+    cancel_threshold_bps: 50
+  position_tracking:
+    enabled: true
+    tolerance_bps: 10
