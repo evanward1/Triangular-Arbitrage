@@ -313,6 +313,27 @@ function DexMevDashboard() {
     return 'profit-loss';
   };
 
+  // Helper to create idempotency key for deduplication
+  const getOpportunityKey = (opp) => {
+    // Create key from: path (sorted) + timestamp rounded to nearest 30 seconds
+    const sortedPath = [...opp.path].sort().join('-');
+    const timeBlock = Math.floor(opp.ts / 30) * 30;  // Round to 30-second blocks
+    return `${sortedPath}-${timeBlock}`;
+  };
+
+  // Deduplicate opportunities - keep only the most recent per key
+  const deduplicateOpportunities = (opps) => {
+    const keyMap = new Map();
+    opps.forEach(opp => {
+      const key = getOpportunityKey(opp);
+      const existing = keyMap.get(key);
+      if (!existing || opp.ts > existing.ts) {
+        keyMap.set(key, opp);
+      }
+    });
+    return Array.from(keyMap.values());
+  };
+
   return (
     <div className="dex-dashboard">
       {/* Summary Banner */}
@@ -390,7 +411,7 @@ function DexMevDashboard() {
           </div>
 
           <div className="control-section">
-            <label title="Buffer for small price changes while trading - adds safety cushion to account for market movement">
+            <label title="Safety margin for price movements during trade execution - applied once to entire route">
               Price Safety Margin (%)
             </label>
             <input
@@ -399,6 +420,7 @@ function DexMevDashboard() {
               value={(config.slippage_floor_bps / 100).toFixed(2)}
               onChange={(e) => setConfig({...config, slippage_floor_bps: parseFloat(e.target.value) * 100})}
               disabled={running}
+              placeholder="e.g., 0.01 for 0.01%"
             />
           </div>
 
@@ -596,7 +618,7 @@ function DexMevDashboard() {
               </tr>
             </thead>
             <tbody>
-              {sortOpportunities(opportunities).map((opp) => {
+              {sortOpportunities(deduplicateOpportunities(opportunities)).map((opp) => {
                 return (
                   <tr
                     key={opp.id}
@@ -727,11 +749,14 @@ function DexMevDashboard() {
                   tickFormatter={formatTimestamp}
                   stroke="#8892a6"
                 />
-                <YAxis stroke="#8892a6" />
+                <YAxis
+                  stroke="#8892a6"
+                  label={{ value: 'USD', angle: -90, position: 'insideLeft', style: { fill: '#8892a6' } }}
+                />
                 <Tooltip
                   contentStyle={{ backgroundColor: '#1a1f3a', border: '1px solid #00d4ff' }}
                   labelFormatter={formatTimestamp}
-                  formatter={(value) => [formatUSD(value), 'Account Balance']}
+                  formatter={(value) => [formatUSD(value), 'Cumulative Profit']}
                 />
                 <Line
                   type="monotone"

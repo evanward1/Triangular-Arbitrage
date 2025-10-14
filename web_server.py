@@ -27,6 +27,9 @@ from decision_engine import DecisionEngine
 # Import live cost computation
 from dex.live_costs import compute_costs_for_route
 
+# Import single source of truth for opportunity math
+from dex.opportunity_math import compute_opportunity_breakdown
+
 # Try to import Web3 - optional dependency
 try:
     from web3 import Web3
@@ -1097,47 +1100,54 @@ async def run_dex_scanner():
                     eth_usd=2000.0,  # ETH price estimate
                 )
 
-                # Extract cost components from result (both bps and pct)
+                # Extract cost components from result
                 fee_bps = costs["fee_bps"]
-                fee_pct = costs["fee_pct"]
                 slip_bps = costs["slip_bps"]
-                slip_pct = costs["slip_pct"]
-                gas_bps = costs["gas_bps"]
-                gas_pct = costs["gas_pct"]
+                gas_usd = (
+                    costs["gas_bps"] / 10000.0
+                ) * size_usd  # Convert gas_bps to USD
 
                 # Mock gross profit (in production, from price feed)
                 # Set high enough to be profitable after costs
                 # (fees ~90 bps + slip ~2 bps + gas ~18 bps = 110 bps)
                 gross_bps = 125.0  # 1.25% gross profit
-                gross_pct = gross_bps / 100.0
-                net_bps = gross_bps - fee_bps - slip_bps - gas_bps
-                net_pct = net_bps / 100.0
 
+                # Use single source of truth for all calculations
+                breakdown = compute_opportunity_breakdown(
+                    gross_bps=gross_bps,
+                    fee_bps=fee_bps,
+                    safety_bps=slip_bps,  # Map slippage to safety margin
+                    gas_usd=gas_usd,
+                    trade_amount_usd=size_usd,
+                )
+
+                # Create opportunity from breakdown (single source of truth)
                 opp = DexOpportunity(
                     id=f"dexop_{scan_count}",
                     path=["USDC", "WETH", "DAI"],
                     gross_bps=gross_bps,
-                    gross_pct=gross_pct,
+                    gross_pct=float(breakdown.gross_pct),
                     fee_bps=fee_bps,
-                    fee_pct=fee_pct,
+                    fee_pct=float(breakdown.fee_pct),
                     slip_bps=slip_bps,
-                    slip_pct=slip_pct,
-                    gas_bps=gas_bps,
-                    gas_pct=gas_pct,
-                    net_bps=net_bps,
-                    net_pct=net_pct,
+                    slip_pct=float(breakdown.safety_pct),
+                    gas_bps=float(
+                        breakdown.gas_pct * 100
+                    ),  # Convert pct to bps for storage
+                    gas_pct=float(breakdown.gas_pct),
+                    net_bps=float(
+                        breakdown.net_pct * 100
+                    ),  # Convert pct to bps for storage
+                    net_pct=float(breakdown.net_pct),
                     size_usd=size_usd,
                     legs=legs,
                     ts=time.time(),
                 )
                 dex_state.add_opportunity(opp)
 
-                # Log opportunity found
+                # Log opportunity found using breakdown format
                 path_str = " → ".join(opp.path)
-                profit_sign = "+" if opp.net_bps >= 0 else ""
-                dex_state.add_log(
-                    f"💡 Found: {path_str} (Net: {profit_sign}{opp.net_bps / 100:.3f}%)"
-                )
+                dex_state.add_log(f"💡 Found: {path_str} • {breakdown.format_log()}")
 
                 # Broadcast opportunity
                 await dex_state.broadcast_ws(
@@ -1214,14 +1224,14 @@ async def run_dex_scanner():
                         }
                     )
 
-                    # Log fill result
+                    # Log fill result with consistent format (Net %  = PnL $)
                     mode_icon = "📝" if fill.paper else "💰"
-                    pnl_sign = "+" if fill.pnl_usd >= 0 else ""
                     pnl_pct = fill.net_bps / 100
-                    dex_state.add_log(
-                        f"{mode_icon} Trade completed: {pnl_sign}${fill.pnl_usd:.2f} "
-                        f"({pnl_sign}{pnl_pct:.3f}%) • Balance: ${current_equity:.2f}"
+                    log_msg = (
+                        f"{mode_icon} Trade completed: Net {pnl_pct:.3f}% = "
+                        f"${fill.pnl_usd:.2f} • Balance: ${current_equity:.2f}"
                     )
+                    dex_state.add_log(log_msg)
 
                     # Broadcast fill
                     await dex_state.broadcast_ws(
