@@ -295,26 +295,53 @@ function DexMevDashboard() {
 
   const chainName = status.chain_id === 1 ? 'Ethereum' : `Chain ${status.chain_id}`;
 
+  // Helper to get profit color class
+  const getProfitColorClass = (netBps) => {
+    if (netBps >= config.min_profit_threshold_bps) return 'profit-good';
+    if (netBps >= 0) return 'profit-marginal';
+    return 'profit-loss';
+  };
+
   return (
     <div className="dex-dashboard">
+      {/* Summary Banner */}
+      {running && (
+        <div className="dex-summary-banner">
+          <div className="summary-content">
+            <span className="summary-text">
+              Currently watching <strong>{status.pools_loaded} markets</strong>
+              {opportunities.length > 0 && (
+                <> — Last opportunity: <strong className={getProfitColorClass(opportunities[0].net_bps)}>
+                  {formatPercent(opportunities[0].net_bps)}
+                </strong> potential gain</>
+              )}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Control Panel */}
       <div className="dex-panel control-panel">
-        <h2>Control Panel</h2>
+        <h2>Settings</h2>
         <div className="control-grid">
           <div className="control-section">
-            <label>Mode</label>
+            <label title="Run in test mode (no real trades) or run live (real trades)">
+              Simulation Mode
+            </label>
             <select
               value={config.mode}
               onChange={(e) => setConfig({...config, mode: e.target.value})}
               disabled={running}
             >
-              <option value="paper_live_chain">Paper (Live Chain)</option>
+              <option value="paper_live_chain">Test Mode (Live Data)</option>
               <option value="live">Live Trading</option>
             </select>
           </div>
 
           <div className="control-section">
-            <label>Chain</label>
+            <label title="Choose which blockchain network to scan for opportunities">
+              Network
+            </label>
             <select
               value={config.chain_id}
               onChange={(e) => setConfig({...config, chain_id: parseInt(e.target.value)})}
@@ -327,7 +354,9 @@ function DexMevDashboard() {
           </div>
 
           <div className="control-section">
-            <label>Size (USD)</label>
+            <label title="How much money to simulate per trade">
+              Trade Amount (USD)
+            </label>
             <input
               type="number"
               value={config.size_usd}
@@ -337,8 +366,8 @@ function DexMevDashboard() {
           </div>
 
           <div className="control-section">
-            <label title="Minimum net profit % required to execute a trade">
-              Min Profit (%)
+            <label title="Smallest gain worth trading - only consider opportunities above this profit threshold">
+              Minimum Target Profit (%)
             </label>
             <input
               type="number"
@@ -350,8 +379,8 @@ function DexMevDashboard() {
           </div>
 
           <div className="control-section">
-            <label title="Safety haircut for price slippage during execution">
-              Slippage Haircut (%)
+            <label title="Buffer for small price changes while trading - adds safety cushion to account for market movement">
+              Price Safety Margin (%)
             </label>
             <input
               type="number"
@@ -374,16 +403,18 @@ function DexMevDashboard() {
           </div>
 
           <div className="control-section">
-            <label>Gas Model</label>
+            <label title="Network speed - fast = higher fee but faster confirmation">
+              Network Speed
+            </label>
             <select
               value={config.gas_model}
               onChange={(e) => setConfig({...config, gas_model: e.target.value})}
               disabled={running}
             >
-              <option value="slow">Slow</option>
+              <option value="slow">Slow (Cheaper)</option>
               <option value="standard">Standard</option>
-              <option value="fast">Fast</option>
-              <option value="instant">Instant</option>
+              <option value="fast">Fast (Recommended)</option>
+              <option value="instant">Instant (Most Expensive)</option>
             </select>
           </div>
 
@@ -403,41 +434,55 @@ function DexMevDashboard() {
 
       {/* Status Panel */}
       <div className="dex-panel status-panel">
-        <h2>Status</h2>
+        <h2>Current Status</h2>
         <div className="status-grid">
           <div className="status-item">
-            <span className="status-label">Mode:</span>
+            <span className="status-label" title="Whether the scanner is running in test mode or live trading mode">
+              Running Mode:
+            </span>
             <span className={`status-value ${status.paper ? 'paper' : 'live'}`}>
-              {status.mode === 'paper_live_chain' ? 'Paper (Live Chain)' :
-               status.mode === 'live' ? 'Live' : 'Off'}
+              {status.mode === 'paper_live_chain' ? 'Test Mode (Live Data)' :
+               status.mode === 'live' ? 'Live Trading' : 'Stopped'}
             </span>
           </div>
           <div className="status-item">
-            <span className="status-label">Chain:</span>
+            <span className="status-label" title="Which blockchain network is being scanned">
+              Network:
+            </span>
             <span className="status-value">{chainName}</span>
           </div>
           <div className="status-item">
-            <span className="status-label">Pools Loaded:</span>
+            <span className="status-label" title="Number of trading markets being monitored for opportunities">
+              Markets Scanned:
+            </span>
             <span className="status-value">{status.pools_loaded}</span>
           </div>
           <div className="status-item">
-            <span className="status-label">Scan Interval:</span>
-            <span className="status-value">{status.scan_interval_sec}s</span>
+            <span className="status-label" title="How often the scanner checks for new opportunities">
+              Check Frequency:
+            </span>
+            <span className="status-value">Every {status.scan_interval_sec}s</span>
           </div>
           <div className="status-item">
-            <span className="status-label">Best Raw:</span>
-            <span className="status-value positive" title="Best raw profit found (after fees, before slippage and gas)">
+            <span className="status-label" title="Highest price difference found (before accounting for trading costs)">
+              Best Price Difference:
+            </span>
+            <span className="status-value positive">
               {formatPercent(status.best_gross_bps)}
             </span>
           </div>
           <div className="status-item">
-            <span className="status-label">Best Net:</span>
-            <span className="status-value positive" title="Best net profit found (after all costs)">
+            <span className="status-label" title="Highest expected gain found after all costs (fees, network costs, price changes)">
+              Best Expected Gain:
+            </span>
+            <span className="status-value positive">
               {formatPercent(status.best_net_bps)}
             </span>
           </div>
           <div className="status-item">
-            <span className="status-label">Last Scan:</span>
+            <span className="status-label" title="Time of the most recent market scan">
+              Last Check:
+            </span>
             <span className="status-value">
               {status.last_scan_ts > 0 ? formatTimestamp(status.last_scan_ts) : 'Never'}
             </span>
@@ -447,19 +492,19 @@ function DexMevDashboard() {
 
       {/* Decision Trace Panel */}
       <div className="dex-panel decision-trace-panel">
-        <h2>Decision Trace (Last 5)</h2>
+        <h2>Recent Decisions (Last 5)</h2>
         <div className="decision-trace-container">
           {decisions.length > 0 ? (
             <table className="decision-trace-table">
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Action</th>
-                  <th>Reasons</th>
-                  <th>Gross</th>
-                  <th>Net</th>
-                  <th>Breakeven</th>
-                  <th>Size</th>
+                  <th title="When this opportunity was evaluated">Time</th>
+                  <th title="Whether the trade was simulated or skipped">Decision</th>
+                  <th title="Why this decision was made">Explanation</th>
+                  <th title="Expected gain before costs">Before Costs</th>
+                  <th title="Expected gain after all costs">After Costs</th>
+                  <th title="Minimum profit needed to break even">Breakeven Target</th>
+                  <th title="Trade amount being evaluated">Amount</th>
                 </tr>
               </thead>
               <tbody>
@@ -468,7 +513,7 @@ function DexMevDashboard() {
                     <td>{decision.timestamp}</td>
                     <td>
                       <span className={`decision-badge ${decision.action === 'EXECUTE' ? 'execute' : 'skip'}`}>
-                        {decision.action}
+                        {decision.action === 'EXECUTE' ? 'Trade Simulated' : 'Trade Skipped'}
                       </span>
                     </td>
                     <td className="reasons-cell">
@@ -479,7 +524,7 @@ function DexMevDashboard() {
                           ))}
                         </div>
                       ) : (
-                        <span className="no-reasons">-</span>
+                        <span className="no-reasons">All conditions met</span>
                       )}
                     </td>
                     <td className="positive">{decision.metrics.gross_pct?.toFixed(2)}%</td>
@@ -500,43 +545,43 @@ function DexMevDashboard() {
 
       {/* Opportunities Table */}
       <div className="dex-panel opps-panel">
-        <h2>Opportunities ({opportunities.length})</h2>
+        <h2>Trading Opportunities ({opportunities.length})</h2>
         <div className="opps-table-container">
           <table className="opps-table">
             <thead>
               <tr>
-                <th>Path</th>
+                <th title="The sequence of tokens involved in this trade route">Trade Route</th>
                 <th
                   onClick={() => toggleSort('gross_bps')}
                   style={{cursor: 'pointer'}}
-                  title="Raw profit after pool fees, before slippage and gas"
+                  title="Expected gain before costs - this is the price difference found in the market"
                 >
-                  Raw {sortField === 'gross_bps' && (sortDesc ? '▼' : '▲')}
+                  Expected Gain (before costs) {sortField === 'gross_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
-                <th title="Estimated pool fees (typically 0.3% per swap)">Fees</th>
+                <th title="Exchange fees charged by the trading platforms (typically 0.3% per swap)">Exchange Fees</th>
                 <th
                   onClick={() => toggleSort('slip_bps')}
                   style={{cursor: 'pointer'}}
-                  title="Safety haircut for price movement during execution"
+                  title="Price cushion to protect against small market movements while trading"
                 >
-                  Slip {sortField === 'slip_bps' && (sortDesc ? '▼' : '▲')}
+                  Price Cushion {sortField === 'slip_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
                 <th
                   onClick={() => toggleSort('gas_bps')}
                   style={{cursor: 'pointer'}}
-                  title="Network transaction cost as % of trade size"
+                  title="Network fee to execute this trade on the blockchain"
                 >
-                  Gas {sortField === 'gas_bps' && (sortDesc ? '▼' : '▲')}
+                  Network Fee {sortField === 'gas_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
                 <th
                   onClick={() => toggleSort('net_bps')}
                   style={{cursor: 'pointer'}}
-                  title="Final profit after all costs"
+                  title="Final expected gain after all costs - this is your actual profit"
                 >
-                  Net {sortField === 'net_bps' && (sortDesc ? '▼' : '▲')}
+                  Final Expected Gain {sortField === 'net_bps' && (sortDesc ? '▼' : '▲')}
                 </th>
-                <th>Size</th>
-                <th>Time</th>
+                <th title="Amount of money being traded">Trade Amount</th>
+                <th title="When this opportunity was detected">Detected At</th>
               </tr>
             </thead>
             <tbody>
@@ -547,24 +592,24 @@ function DexMevDashboard() {
                   <tr
                     key={opp.id}
                     onClick={() => setSelectedOpp(opp)}
-                    className={selectedOpp?.id === opp.id ? 'selected' : ''}
+                    className={`${selectedOpp?.id === opp.id ? 'selected' : ''} ${getProfitColorClass(opp.net_bps)}`}
                   >
                     <td className="path-cell">{opp.path.join(' → ')}</td>
-                    <td className="positive" title={`${formatPercent(opp.gross_bps)} ≈ ${formatUSD(opp.gross_bps * opp.size_usd / 10000)}`}>
+                    <td className="positive" title={`${formatPercent(opp.gross_bps)} (approximately ${formatUSD(opp.gross_bps * opp.size_usd / 10000)})`}>
                       {formatPercent(opp.gross_bps)}
                     </td>
-                    <td title={`Estimated ${estimatedFeesBps} bps total`}>
+                    <td title={`Estimated exchange fees: ${formatPercent(estimatedFeesBps)}`}>
                       {formatPercent(estimatedFeesBps)}
                     </td>
-                    <td title={`${formatPercent(opp.slip_bps)} ≈ ${formatUSD(opp.slip_bps * opp.size_usd / 10000)}`}>
+                    <td title={`Price cushion: ${formatPercent(opp.slip_bps)} (approximately ${formatUSD(opp.slip_bps * opp.size_usd / 10000)})`}>
                       {formatPercent(opp.slip_bps)}
                     </td>
-                    <td title={`${formatPercent(opp.gas_bps)} ≈ ${formatUSD(opp.gas_bps * opp.size_usd / 10000)}`}>
+                    <td title={`Network fee: ${formatPercent(opp.gas_bps)} (approximately ${formatUSD(opp.gas_bps * opp.size_usd / 10000)})`}>
                       {formatPercent(opp.gas_bps)}
                     </td>
                     <td
                       className={opp.net_bps >= 0 ? 'positive' : 'negative'}
-                      title={`${formatPercent(opp.net_bps)} ≈ ${formatUSD(opp.net_bps * opp.size_usd / 10000)}`}
+                      title={`Final expected gain: ${formatPercent(opp.net_bps)} (approximately ${formatUSD(opp.net_bps * opp.size_usd / 10000)})`}
                     >
                       <strong>{formatPercent(opp.net_bps)}</strong>
                     </td>
@@ -585,50 +630,85 @@ function DexMevDashboard() {
       {selectedOpp && (
         <div className="opp-drawer">
           <div className="drawer-header">
-            <h3>Opportunity Details</h3>
+            <h3>Cost Breakdown</h3>
             <button onClick={() => setSelectedOpp(null)}>✕</button>
           </div>
           <div className="drawer-content">
-            <div className="drawer-section">
-              <strong>Path:</strong> {selectedOpp.path.join(' → ')}
+            <div className="drawer-section highlight">
+              <strong>Trade Route:</strong>
+              <div className="route-display">{selectedOpp.path.join(' → ')}</div>
             </div>
+
             <div className="drawer-section">
-              <strong>Gross Profit:</strong> <span className="positive">{formatBps(selectedOpp.gross_bps)} bps</span>
-            </div>
-            <div className="drawer-section">
-              <strong>Net Profit:</strong>
-              <span className={selectedOpp.net_bps >= 0 ? 'positive' : 'negative'}>
-                {formatBps(selectedOpp.net_bps)} bps
-              </span>
-            </div>
-            <div className="drawer-section">
-              <strong>Gas Cost:</strong> {formatBps(selectedOpp.gas_bps)} bps
-            </div>
-            <div className="drawer-section">
-              <strong>Slippage:</strong> {formatBps(selectedOpp.slip_bps)} bps
-            </div>
-            <div className="drawer-section">
-              <strong>Size:</strong> {formatUSD(selectedOpp.size_usd)}
-            </div>
-            <div className="drawer-section legs-section">
-              <strong>Legs:</strong>
-              {selectedOpp.legs.map((leg, idx) => (
-                <div key={idx} className="leg-detail">
-                  <div><strong>{leg.pair}</strong> ({leg.side})</div>
-                  <div>Price: {leg.price.toFixed(2)}</div>
-                  <div>Liquidity: {formatUSD(leg.liq_usd)}</div>
-                  <div>Est. Slippage: {formatBps(leg.slip_bps_est)} bps</div>
+              <h4>Profit Calculation</h4>
+              <div className="cost-breakdown">
+                <div className="cost-line">
+                  <span className="cost-label">Starting with:</span>
+                  <span className="cost-value">{formatUSD(selectedOpp.size_usd)}</span>
                 </div>
-              ))}
+                <div className="cost-line highlight">
+                  <span className="cost-label">Expected gain (before costs):</span>
+                  <span className="cost-value positive">
+                    {formatPercent(selectedOpp.gross_bps)}
+                    <span className="usd-equiv">({formatUSD(selectedOpp.gross_bps * selectedOpp.size_usd / 10000)})</span>
+                  </span>
+                </div>
+                <div className="cost-separator">Minus costs:</div>
+                <div className="cost-line indent">
+                  <span className="cost-label">Exchange fees:</span>
+                  <span className="cost-value negative">
+                    {formatPercent((selectedOpp.path.length - 1) * 30)}
+                    <span className="usd-equiv">({formatUSD(((selectedOpp.path.length - 1) * 30) * selectedOpp.size_usd / 10000)})</span>
+                  </span>
+                </div>
+                <div className="cost-line indent">
+                  <span className="cost-label">Price cushion:</span>
+                  <span className="cost-value negative">
+                    {formatPercent(selectedOpp.slip_bps)}
+                    <span className="usd-equiv">({formatUSD(selectedOpp.slip_bps * selectedOpp.size_usd / 10000)})</span>
+                  </span>
+                </div>
+                <div className="cost-line indent">
+                  <span className="cost-label">Network fee:</span>
+                  <span className="cost-value negative">
+                    {formatPercent(selectedOpp.gas_bps)}
+                    <span className="usd-equiv">({formatUSD(selectedOpp.gas_bps * selectedOpp.size_usd / 10000)})</span>
+                  </span>
+                </div>
+                <div className="cost-separator"></div>
+                <div className="cost-line total">
+                  <span className="cost-label"><strong>Final expected gain:</strong></span>
+                  <span className={`cost-value ${selectedOpp.net_bps >= 0 ? 'positive' : 'negative'}`}>
+                    <strong>{formatPercent(selectedOpp.net_bps)}</strong>
+                    <span className="usd-equiv"><strong>({formatUSD(selectedOpp.net_bps * selectedOpp.size_usd / 10000)})</strong></span>
+                  </span>
+                </div>
+              </div>
             </div>
+
+            {selectedOpp.legs && selectedOpp.legs.length > 0 && (
+              <div className="drawer-section">
+                <h4>Trade Steps</h4>
+                {selectedOpp.legs.map((leg, idx) => (
+                  <div key={idx} className="leg-detail">
+                    <div className="leg-header"><strong>Step {idx + 1}: {leg.pair}</strong> ({leg.side})</div>
+                    <div className="leg-info">
+                      <div>Price: {leg.price.toFixed(2)}</div>
+                      <div>Available Liquidity: {formatUSD(leg.liq_usd)}</div>
+                      <div>Estimated Price Impact: {formatPercent(leg.slip_bps_est || 0)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Equity Chart and Fills */}
+      {/* Performance Chart and Recent Trades */}
       <div className="dex-bottom-row">
         <div className="dex-panel equity-panel">
-          <h2>Equity Curve</h2>
+          <h2>Performance Over Time</h2>
           {equity.length > 0 ? (
             <ResponsiveContainer width="100%" height={250}>
               <LineChart data={equity}>
@@ -642,6 +722,7 @@ function DexMevDashboard() {
                 <Tooltip
                   contentStyle={{ backgroundColor: '#1a1f3a', border: '1px solid #00d4ff' }}
                   labelFormatter={formatTimestamp}
+                  formatter={(value) => [formatUSD(value), 'Account Balance']}
                 />
                 <Line
                   type="monotone"
@@ -653,21 +734,21 @@ function DexMevDashboard() {
               </LineChart>
             </ResponsiveContainer>
           ) : (
-            <div className="empty-state">No equity data yet</div>
+            <div className="empty-state">No performance data yet</div>
           )}
         </div>
 
         <div className="dex-panel fills-panel">
-          <h2>Recent Fills ({fills.length})</h2>
+          <h2>Recent Trades ({fills.length})</h2>
           <div className="fills-table-container">
             <table className="fills-table">
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Mode</th>
-                  <th>Net (bps)</th>
-                  <th>P&L</th>
-                  <th>TX</th>
+                  <th title="When this trade was executed">Time</th>
+                  <th title="Whether this was a test trade or live trade">Mode</th>
+                  <th title="Final profit percentage after all costs">Profit %</th>
+                  <th title="Profit or loss in dollars">Gain/Loss</th>
+                  <th title="Blockchain transaction details">Transaction</th>
                 </tr>
               </thead>
               <tbody>
@@ -676,11 +757,11 @@ function DexMevDashboard() {
                     <td>{formatTimestamp(fill.ts)}</td>
                     <td>
                       <span className={`mode-badge ${fill.paper ? 'paper' : 'live'}`}>
-                        {fill.paper ? 'Paper' : 'Live'}
+                        {fill.paper ? 'Test' : 'Live'}
                       </span>
                     </td>
                     <td className={fill.net_bps >= 0 ? 'positive' : 'negative'}>
-                      {formatBps(fill.net_bps)} bps
+                      {formatPercent(fill.net_bps)}
                     </td>
                     <td className={fill.pnl_usd >= 0 ? 'positive' : 'negative'}>
                       {formatUSD(fill.pnl_usd)}
@@ -692,6 +773,7 @@ function DexMevDashboard() {
                           target="_blank"
                           rel="noopener noreferrer"
                           className="tx-link"
+                          title="View on Etherscan"
                         >
                           View
                         </a>
@@ -704,7 +786,7 @@ function DexMevDashboard() {
               </tbody>
               </table>
             {fills.length === 0 && (
-              <div className="empty-state">No fills yet</div>
+              <div className="empty-state">No trades executed yet</div>
             )}
           </div>
         </div>
