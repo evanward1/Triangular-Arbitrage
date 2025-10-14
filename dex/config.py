@@ -188,6 +188,21 @@ class DexConfig:
         return dexes
 
     @property
+    def slippage_pct(self) -> float:
+        """Alias for price_safety_margin_pct (backward compatibility)."""
+        return self.price_safety_margin_pct
+
+    @property
+    def slippage_bps(self) -> float:
+        """Safety margin in basis points (for backward compatibility)."""
+        return self.price_safety_margin_pct * 100.0
+
+    @property
+    def slippage_decimal(self) -> Decimal:
+        """Safety margin as Decimal (backward compatibility)."""
+        return Decimal(str(self.price_safety_margin_pct)) / Decimal("100")
+
+    @property
     def safety_bps(self) -> float:
         """Safety margin in basis points (for backward compatibility)."""
         return self.price_safety_margin_pct * 100.0

@@ -2195,11 +2195,7 @@ class RealTriangularArbitrage:
                             + self.slippage_pct_estimate
                         )
                         # Sanity check: breakeven should be positive and reasonable (<100%)
-                        if 0 < breakeven_gross < 100:
-                            breakeven_str = (
-                                f" (need profit before costs ≥{breakeven_gross:.2f}%)"
-                            )
-                        else:
+                        if not (0 < breakeven_gross < 100):
                             breakeven_gross = 0  # Fallback
                     except Exception:
                         breakeven_gross = 0  # Fallback
@@ -2931,22 +2927,21 @@ class RealTriangularArbitrage:
                     f"opportunities in scan {trade_num}"
                 )
 
-                # Print equity after execution
-                if executed_count > 0:
-                    cur, priced, unpriced = self._equity_usd()
-                    delta = cur - self.start_equity_usd
-                    deltap = (
-                        (delta / self.start_equity_usd * 100.0)
-                        if self.start_equity_usd
-                        else 0.0
-                    )
-                    kill_switch_msg = (
-                        " [🛑 KILL SWITCH ACTIVE]" if self.kill_switch_active else ""
-                    )
-                    print(
-                        f"💼 Equity: ${cur:,.{self.equity_precision}f} "
-                        f"(Δ ${delta:+,.{self.equity_precision}f}, {deltap:+.2f}%){kill_switch_msg}"
-                    )
+                # Always print current equity (even if no trades executed)
+                cur, priced, unpriced = self._equity_usd()
+                delta = cur - self.start_equity_usd
+                deltap = (
+                    (delta / self.start_equity_usd * 100.0)
+                    if self.start_equity_usd
+                    else 0.0
+                )
+                kill_switch_msg = (
+                    " [🛑 KILL SWITCH ACTIVE]" if self.kill_switch_active else ""
+                )
+                print(
+                    f"💼 Balance: ${cur:,.{self.equity_precision}f} "
+                    f"(Δ ${delta:+,.{self.equity_precision}f}, {deltap:+.2f}%){kill_switch_msg}"
+                )
 
                 # Record scan in equity tracker
                 await self.equity_tracker.on_scan(self.get_cash, self.get_asset_value)

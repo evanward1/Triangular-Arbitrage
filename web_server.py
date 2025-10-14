@@ -1187,47 +1187,14 @@ async def run_dex_scanner():
                     has_gas_estimate=True,  # Mock always has gas estimates
                 )
 
-                # Log the decision (simplified for user-friendly display)
+                # Log the decision in server logs (detailed)
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 decision_log = dex_state.decision_engine.format_decision_log(
                     decision, timestamp
                 )
-                logger.info(decision_log)  # Keep detailed log in server logs
+                logger.info(decision_log)
 
-                # Simplified user-facing log
-                metrics = (
-                    decision.metrics
-                    if hasattr(decision.metrics, "__getitem__")
-                    else decision.metrics.__dict__
-                )
-                if decision.action == "EXECUTE":
-                    dex_state.add_log(
-                        f"✅ EXECUTE: Net {metrics['net_pct']:.3f}% "
-                        f"(Gross {metrics['gross_pct']:.3f}% - "
-                        f"Fees {metrics['fees_pct']:.3f}% - "
-                        f"Gas {metrics['gas_pct']:.3f}%)"
-                    )
-                else:
-                    reason_summary = (
-                        decision.reasons[0] if decision.reasons else "Unknown"
-                    )
-                    # Simplify threshold message
-                    if "threshold" in reason_summary:
-                        dex_state.add_log(
-                            f"⏭️  SKIP: Net {metrics['net_pct']:.3f}% below minimum target"
-                        )
-                    else:
-                        dex_state.add_log(f"⏭️  SKIP: {reason_summary}")
-
-                # Record decision
-                dex_state.add_decision(decision.to_dict())
-
-                # Broadcast decision to connected clients
-                await dex_state.broadcast_ws(
-                    {"type": "decision", "data": decision.to_dict()}
-                )
-
-                # Execute only if decision is EXECUTE
+                # Execute only if decision is EXECUTE, then apply dedup gates
                 if decision.action == "EXECUTE":
                     # Check deduplication before executing
                     # Create route_id and fingerprint
@@ -1251,12 +1218,21 @@ async def run_dex_scanner():
                     )
 
                     if not should_execute:
-                        # Log skip with reason
+                        # Flip decision to SKIP and attach reason for UI
+                        decision.action = "SKIP"
+                        if skip_reason and skip_reason not in decision.reasons:
+                            decision.reasons.append(skip_reason)
                         dex_state.add_log(f"⏭️  SKIP: {skip_reason}")
-                        # Add equity point to keep chart alive
-                        dex_state.add_equity_point(current_equity, cumulative_pnl)
-                        continue  # Skip this opportunity
+                        # fall through to record and broadcast the SKIP
 
+                # Record the final decision after dedup gates
+                dex_state.add_decision(decision.to_dict())
+                await dex_state.broadcast_ws(
+                    {"type": "decision", "data": decision.to_dict()}
+                )
+
+                # If action remains EXECUTE here, proceed to actually run it
+                if decision.action == "EXECUTE":
                     # Execute the opportunity
                     dex_state.add_log(f"Executing opportunity: {path_str}")
                     fill = await executor.execute(opp)
@@ -1302,7 +1278,7 @@ async def run_dex_scanner():
                         {"type": "fill", "data": fill.model_dump()}
                     )
                 else:
-                    # Add equity point even when skipping to keep chart alive
+                    # Decision was SKIP (either on profit math or dedup). Keep equity chart alive.
                     dex_state.add_equity_point(current_equity, cumulative_pnl)
 
             # Broadcast status update
