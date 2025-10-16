@@ -1112,7 +1112,9 @@ class DexRunner:
             gross_gap = breakeven_gross - best.gross_pct
 
             print(f"\n  {c.BLUE}{'─' * 72}{c.RESET}")
-            print(f"  {c.YELLOW}⚠{c.RESET}  {c.BOLD}No Profitable Opportunities{c.RESET}")
+            print(
+                f"  {c.YELLOW}⚠{c.RESET}  {c.BOLD}No Profitable Opportunities{c.RESET}"
+            )
             print(
                 f"     {c.DIM}Best route would lose{c.RESET} {c.RED}{abs(best.net_pct):.2f}%{c.RESET} "
                 f"{c.DIM}(need{c.RESET} {c.YELLOW}{gross_gap:+.2f}%{c.RESET} "
@@ -1137,7 +1139,9 @@ class DexRunner:
             )
 
         # EV stats
-        ev_scan = sum(self.pnl_history) / len(self.pnl_history) if self.pnl_history else 0.0
+        ev_scan = (
+            sum(self.pnl_history) / len(self.pnl_history) if self.pnl_history else 0.0
+        )
         if len(self.pnl_history) >= 10:
             ev_color = c.GREEN if ev_scan > 0 else c.RED
             print(
@@ -1185,11 +1189,17 @@ class DexRunner:
         """Log summary for a batch of scans (for quiet mode)."""
         ema_str = ""
         if self.ema_gross is not None:
-            ema_str = f" | avg_gross={self.ema_gross:+.2f}% avg_net={self.ema_net:+.2f}%"
+            ema_str = (
+                f" | avg_gross={self.ema_gross:+.2f}% avg_net={self.ema_net:+.2f}%"
+            )
 
         best_str = ""
         if self.batch_best_net is not None:
-            indicator = "[BAD]" if self.batch_best_net < self.config.threshold_net_pct else "[GOOD]"
+            indicator = (
+                "[BAD]"
+                if self.batch_best_net < self.config.threshold_net_pct
+                else "[GOOD]"
+            )
             best_str = f" | best_net={self.batch_best_net:+.2f}% {indicator}"
 
         ev_str = ""

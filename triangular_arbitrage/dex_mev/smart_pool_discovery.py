@@ -166,7 +166,8 @@ class SmartPoolDiscovery:
         logger.info(f"  Found {len(cross_dex_pairs)} cross-DEX pairs")
 
         if not cross_dex_pairs:
-            logger.warning("  No cross-DEX pairs found! Cannot perform arbitrage.\n"
+            logger.warning(
+                "  No cross-DEX pairs found! Cannot perform arbitrage.\n"
                 "  Try increasing max_scan_per_factory or expanding token whitelist."
             )
             return []

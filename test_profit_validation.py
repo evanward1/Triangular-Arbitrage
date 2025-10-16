@@ -21,7 +21,9 @@ def validate_pool(pool: DexPool, name: str) -> bool:
 
     # Check minimum reserves
     if pool.r0 < MIN_RESERVE or pool.r1 < MIN_RESERVE:
-        print("  ❌ REJECTED: reserves too low (min: {:,.0f})".format(float(MIN_RESERVE)))
+        print(
+            "  ❌ REJECTED: reserves too low (min: {:,.0f})".format(float(MIN_RESERVE))
+        )
         return False
 
     # Check price ratio

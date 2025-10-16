@@ -38,7 +38,9 @@ async def main():
     runner.fetch_pools()
 
     if runner.pools:
-        logger.info("\n✓ SUCCESS: Found %d pools after cross-DEX filtering", len(runner.pools))
+        logger.info(
+            "\n✓ SUCCESS: Found %d pools after cross-DEX filtering", len(runner.pools)
+        )
 
         # Show sample of pools
         logger.info("\nSample pools (first 10):")
