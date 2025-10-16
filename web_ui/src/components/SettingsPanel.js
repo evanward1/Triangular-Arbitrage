@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import PropTypes from 'prop-types';
 import './SettingsPanel.css';
 
 function SettingsPanel({ botRunning }) {
@@ -108,5 +109,9 @@ function SettingsPanel({ botRunning }) {
     </div>
   );
 }
+
+SettingsPanel.propTypes = {
+  botRunning: PropTypes.bool.isRequired,
+};
 
 export default SettingsPanel;

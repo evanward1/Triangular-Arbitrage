@@ -7,6 +7,7 @@ This module provides:
 - Request validation
 """
 
+import asyncio
 import logging
 import time
 from collections import defaultdict
@@ -40,10 +41,11 @@ class RateLimiter:
         self.window_size = 60  # seconds
         # Store: {client_id: [(timestamp1, timestamp2, ...)]}
         self.request_history: Dict[str, list] = defaultdict(list)
+        self._lock = asyncio.Lock()  # Protect request_history from race conditions
 
-    def is_allowed(self, client_id: str) -> Tuple[bool, Optional[int]]:
+    async def is_allowed(self, client_id: str) -> Tuple[bool, Optional[int]]:
         """
-        Check if request is allowed under rate limit.
+        Check if request is allowed under rate limit (thread-safe).
 
         Args:
             client_id: Unique identifier for client (IP address)
@@ -51,43 +53,45 @@ class RateLimiter:
         Returns:
             Tuple of (is_allowed, retry_after_seconds)
         """
-        now = time.time()
-        cutoff = now - self.window_size
+        async with self._lock:
+            now = time.time()
+            cutoff = now - self.window_size
 
-        # Clean old requests outside the window
-        self.request_history[client_id] = [
-            ts for ts in self.request_history[client_id] if ts > cutoff
-        ]
+            # Clean old requests outside the window
+            self.request_history[client_id] = [
+                ts for ts in self.request_history[client_id] if ts > cutoff
+            ]
 
-        # Check if under limit
-        if len(self.request_history[client_id]) >= self.requests_per_minute:
-            # Calculate retry_after from oldest request in window
-            oldest = min(self.request_history[client_id])
-            retry_after = int(oldest + self.window_size - now) + 1
-            return False, retry_after
+            # Check if under limit
+            if len(self.request_history[client_id]) >= self.requests_per_minute:
+                # Calculate retry_after from oldest request in window
+                oldest = min(self.request_history[client_id])
+                retry_after = int(oldest + self.window_size - now) + 1
+                return False, retry_after
 
-        # Allow request and record timestamp
-        self.request_history[client_id].append(now)
-        return True, None
+            # Allow request and record timestamp
+            self.request_history[client_id].append(now)
+            return True, None
 
-    def cleanup_old_entries(self, max_age_seconds: int = 300):
+    async def cleanup_old_entries(self, max_age_seconds: int = 300):
         """
-        Cleanup old client histories to prevent memory bloat.
+        Cleanup old client histories to prevent memory bloat (thread-safe).
 
         Args:
             max_age_seconds: Remove clients with no requests in this many seconds
         """
-        now = time.time()
-        cutoff = now - max_age_seconds
+        async with self._lock:
+            now = time.time()
+            cutoff = now - max_age_seconds
 
-        clients_to_remove = [
-            client_id
-            for client_id, timestamps in self.request_history.items()
-            if not timestamps or max(timestamps) < cutoff
-        ]
+            clients_to_remove = [
+                client_id
+                for client_id, timestamps in self.request_history.items()
+                if not timestamps or max(timestamps) < cutoff
+            ]
 
-        for client_id in clients_to_remove:
-            del self.request_history[client_id]
+            for client_id in clients_to_remove:
+                del self.request_history[client_id]
 
 
 class SecurityManager:
@@ -168,7 +172,7 @@ class SecurityManager:
         # Use client IP as identifier
         client_ip = request.client.host if request.client else "unknown"
 
-        allowed, retry_after = self.rate_limiter.is_allowed(client_ip)
+        allowed, retry_after = await self.rate_limiter.is_allowed(client_ip)
 
         if not allowed:
             logger.warning(f"Rate limit exceeded for {client_ip}")

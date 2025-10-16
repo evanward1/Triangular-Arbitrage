@@ -1,4 +1,5 @@
 import React from 'react';
+import PropTypes from 'prop-types';
 import './TradeHistory.css';
 
 function TradeHistory({ trades }) {
@@ -63,5 +64,17 @@ function TradeHistory({ trades }) {
     </div>
   );
 }
+
+TradeHistory.propTypes = {
+  trades: PropTypes.arrayOf(
+    PropTypes.shape({
+      status: PropTypes.string.isRequired,
+      cycle: PropTypes.string.isRequired,
+      profit_usd: PropTypes.number.isRequired,
+      profit_pct: PropTypes.number.isRequired,
+      timestamp: PropTypes.number.isRequired,
+    })
+  ).isRequired,
+};
 
 export default TradeHistory;

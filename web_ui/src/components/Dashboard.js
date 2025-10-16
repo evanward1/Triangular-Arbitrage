@@ -1,4 +1,5 @@
 import React from 'react';
+import PropTypes from 'prop-types';
 import './Dashboard.css';
 
 function Dashboard({ balance, stats }) {
@@ -82,5 +83,21 @@ function Dashboard({ balance, stats }) {
     </div>
   );
 }
+
+Dashboard.propTypes = {
+  balance: PropTypes.shape({
+    total_equity_usd: PropTypes.number.isRequired,
+    cash_balance: PropTypes.number.isRequired,
+    total_profit_usd: PropTypes.number.isRequired,
+    total_trades: PropTypes.number.isRequired,
+    asset_balances: PropTypes.objectOf(PropTypes.number),
+  }).isRequired,
+  stats: PropTypes.shape({
+    uptime_seconds: PropTypes.number.isRequired,
+    success_rate: PropTypes.number.isRequired,
+    total_scans: PropTypes.number.isRequired,
+    opportunities_found: PropTypes.number.isRequired,
+  }).isRequired,
+};
 
 export default Dashboard;

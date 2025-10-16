@@ -1,8 +1,20 @@
 # DEX Paper Trading Config - BSC (Best for Finding Inefficient Routes)
 # BSC has many copycat tokens, shallow liquidity, and frequent mispricings
 
-# BSC mainnet RPC (free, public)
+# BSC mainnet RPC with fallback support
+# Primary RPC will be tried first, then fallbacks in order
 rpc_url: "https://bsc-dataseed.binance.org"
+
+# Alternative BSC RPCs (automatically used as fallbacks in dex/runner.py)
+# If primary fails, runner will try these in order:
+# - https://bsc-dataseed1.binance.org
+# - https://bsc-dataseed2.binance.org
+# - https://bsc-dataseed3.binance.org
+# - https://bsc-dataseed4.binance.org
+# - https://bsc.rpc.blxrbdn.com (bloXroute - fast & reliable)
+# - https://bsc.publicnode.com (publicnode - reliable)
+# - https://rpc.ankr.com/bsc (Ankr - reliable)
+# - https://binance.nodereal.io (NodeReal - reliable)
 
 poll_sec: 3  # Scan every 3 seconds - leverage 5s cache for speed
 once: false
