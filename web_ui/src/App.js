@@ -137,7 +137,10 @@ function App() {
   const startBot = async () => {
     try {
       const response = await fetch(`/api/bot/start?mode=${selectedMode}`, {
-        method: 'POST'
+        method: 'POST',
+        headers: {
+          'X-API-Key': process.env.REACT_APP_WEB_API_KEY || ''
+        }
       });
       const data = await response.json();
 
@@ -158,7 +161,12 @@ function App() {
 
   const stopBot = async () => {
     try {
-      const response = await fetch('/api/bot/stop', { method: 'POST' });
+      const response = await fetch('/api/bot/stop', {
+        method: 'POST',
+        headers: {
+          'X-API-Key': process.env.REACT_APP_WEB_API_KEY || ''
+        }
+      });
       if (response.ok) {
         setBotRunning(false);
       }

@@ -78,23 +78,32 @@ class DexConfig:
             "gas_cost_usd_override"
         )
 
-        # Tokens
-        tokens_raw = self._get_required(config_dict, "tokens", dict)
+        # Tokens (optional if using dynamic pool discovery)
+        tokens_raw = config_dict.get("tokens", {})
         self.tokens: Dict[str, Dict[str, Any]] = self._parse_tokens(tokens_raw)
 
-        # Validate USD token exists
-        if self.usd_token not in self.tokens:
+        # Validate USD token exists (only if tokens are specified)
+        if self.tokens and self.usd_token not in self.tokens:
             raise ConfigError(
                 f"usd_token '{self.usd_token}' not found in tokens config"
             )
 
-        # DEXes
-        dexes_raw = self._get_required(config_dict, "dexes", list)
+        # Dynamic pool discovery config
+        self.dynamic_pools: Optional[Dict[str, Any]] = self._parse_dynamic_pools(
+            config_dict.get("dynamic_pools", {})
+        )
+
+        # DEXes (static config - optional if using dynamic pools)
+        dexes_raw = config_dict.get("dexes", [])
         self.dexes: List[Dict[str, Any]] = self._parse_dexes(dexes_raw)
 
-        # Validate at least one DEX
-        if not self.dexes:
-            raise ConfigError("At least one DEX must be configured")
+        # Validate at least one DEX or dynamic pools enabled
+        if not self.dexes and not (
+            self.dynamic_pools and self.dynamic_pools.get("enabled")
+        ):
+            raise ConfigError(
+                "Either static DEXes or dynamic_pools.enabled must be configured"
+            )
 
     @staticmethod
     def _get_required(d: Dict, key: str, expected_type: type) -> Any:
@@ -186,6 +195,64 @@ class DexConfig:
             )
 
         return dexes
+
+    @staticmethod
+    def _parse_dynamic_pools(dynamic_raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Parse and validate dynamic pool discovery config.
+
+        Args:
+            dynamic_raw: Dynamic pools config dict
+
+        Returns:
+            Parsed config or None if not enabled
+
+        Raises:
+            ConfigError: If config is invalid
+        """
+        if not dynamic_raw or not dynamic_raw.get("enabled"):
+            return None
+
+        config = {
+            "enabled": True,
+            "min_liquidity_usd": float(dynamic_raw.get("min_liquidity_usd", 10000)),
+            "max_pools_per_dex": dynamic_raw.get("max_pools_per_dex"),
+            "max_scan_pools": dynamic_raw.get("max_scan_pools"),
+            "factories": [],
+        }
+
+        # Parse factory addresses
+        factories_raw = dynamic_raw.get("factories", [])
+        if not isinstance(factories_raw, list):
+            raise ConfigError("dynamic_pools.factories must be a list")
+
+        for i, factory in enumerate(factories_raw):
+            if not isinstance(factory, dict):
+                raise ConfigError(f"Factory config {i} must be a dict")
+
+            name = factory.get("name")
+            address = factory.get("address")
+            fee_bps = factory.get("fee_bps")
+
+            if not name:
+                raise ConfigError(f"Factory config {i} missing 'name'")
+            if not address:
+                raise ConfigError(f"Factory config {i} missing 'address'")
+            if fee_bps is None:
+                raise ConfigError(f"Factory config {i} missing 'fee_bps'")
+
+            config["factories"].append(
+                {
+                    "name": name,
+                    "address": address,
+                    "fee_bps": int(fee_bps),
+                }
+            )
+
+        if not config["factories"]:
+            raise ConfigError("dynamic_pools enabled but no factories configured")
+
+        return config
 
     @property
     def slippage_pct(self) -> float:

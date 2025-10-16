@@ -1,0 +1,64 @@
+# DEX Paper Trading Config - Base Network (Optimized for Finding Opportunities)
+# Base has lower fees, newer pools, and more transient mispricings than Ethereum
+
+# Base mainnet RPC (free, reliable)
+rpc_url: "https://mainnet.base.org"
+
+poll_sec: 5  # Scan every 5 seconds to catch fast-moving opportunities
+once: false
+
+# Trading parameters
+usd_token: "USDC"
+max_position_usd: 1000
+slippage_bps: 10  # Slightly higher for volatile pairs
+threshold_net_pct: 0.0  # Show all opportunities in paper mode
+
+# Gas cost (Base is very cheap compared to Ethereum)
+gas_price_gwei: 0.05  # Base gas is ~0.05 gwei
+gas_limit: 200000
+gas_cost_usd_override: 0.02  # ~$0.02 per trade on Base
+
+# Tokens discovered automatically from pools
+# Include more tokens for volatile/inefficient pairs
+tokens:
+  USDC:
+    address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # Base USDC
+    decimals: 6
+  WETH:
+    address: "0x4200000000000000000000000000000000000006"  # Base WETH
+    decimals: 18
+  DAI:
+    address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb"  # Base DAI
+    decimals: 18
+
+# Dynamic pool discovery - optimized for Base
+dynamic_pools:
+  enabled: true
+  min_liquidity_usd: 25000  # Lower threshold for newer pools on Base
+  max_pools_per_dex: 15     # More pools to find inefficiencies
+  max_scan_pools: 50        # Scan more pools on Base (faster than Ethereum)
+
+  # Factory contracts on Base
+  # Base has BaseSwap, Uniswap V3, and others
+  factories:
+    - name: "uniswap_v3_low"  # 0.05% fee tier
+      address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"  # Uniswap V3 Factory on Base
+      fee_bps: 5  # 0.05% low-fee tier
+
+    - name: "uniswap_v3_med"  # 0.30% fee tier
+      address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
+      fee_bps: 30  # 0.30% standard tier
+
+    - name: "baseswap"  # Base's native DEX
+      address: "0xFDa619b6d20975be80A10332cD39b9a4b0FAa8BB"  # BaseSwap Factory
+      fee_bps: 25  # 0.25% fee
+
+# Legacy static pools (disabled - use dynamic discovery)
+dexes: []
+
+# Why Base is Better for Finding Opportunities:
+# 1. Newer ecosystem = less efficient markets
+# 2. Lower gas costs = can profit from smaller spreads
+# 3. Growing liquidity = new pools forming with temporary mispricings
+# 4. Less MEV competition than Ethereum mainnet
+# 5. Expected gross profits: +0.20% to +0.60% before costs

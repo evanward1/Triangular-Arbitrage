@@ -154,6 +154,7 @@ def get_logger(
     name: str,
     level: Union[str, int] = logging.INFO,
     extra: Optional[Dict[str, Any]] = None,
+    minimal: bool = False,
 ) -> logging.Logger:
     """
     Get a structured logger with consistent formatting and extra context.
@@ -162,6 +163,7 @@ def get_logger(
         name: Logger name (typically __name__)
         level: Logging level
         extra: Additional context fields to include in all log messages
+        minimal: If True, use simplified format (time + message only)
 
     Returns:
         Configured logger with structured output
@@ -176,10 +178,14 @@ def get_logger(
     if not logger.handlers:
         handler = logging.StreamHandler()
 
-        # Structured format with timestamp, level, module, and message
-        format_str = (
-            "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | " "%(message)s"
-        )
+        if minimal:
+            # Minimal format: just time and message
+            format_str = "%(asctime)s | %(message)s"
+        else:
+            # Structured format with timestamp, level, module, and message
+            format_str = (
+                "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | " "%(message)s"
+            )
 
         if extra:
             # Add extra fields to format
@@ -188,7 +194,8 @@ def get_logger(
                 " | %(message)s", f" | {extra_fields} | %(message)s"
             )
 
-        formatter = logging.Formatter(format_str)
+        # Use shorter timestamp format
+        formatter = logging.Formatter(format_str, datefmt="%H:%M:%S")
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 

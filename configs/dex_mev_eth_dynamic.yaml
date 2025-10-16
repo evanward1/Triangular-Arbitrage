@@ -1,0 +1,78 @@
+# DEX Paper Trading Config - Ethereum Mainnet with Dynamic Pool Discovery
+# This config uses factory contract scanning to automatically discover ALL pools
+
+# Ethereum mainnet RPC (free, reliable public endpoint)
+rpc_url: "https://eth.drpc.org"
+
+poll_sec: 10
+once: false
+
+# Trading parameters
+usd_token: "USDC"
+max_position_usd: 1000
+slippage_bps: 5
+threshold_net_pct: 0.0
+
+# Gas cost (typical Ethereum)
+gas_price_gwei: 12
+gas_limit: 220000
+gas_cost_usd_override: 2.50
+
+# Tokens are discovered automatically from pools
+# No need to list all tokens - the scanner will find them dynamically
+# Only need to specify the quote token for USD denomination
+tokens:
+  USDC:
+    address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    decimals: 6
+
+# Dynamic pool discovery configuration
+# Instead of hardcoded pools, we scan factory contracts to discover ALL pools
+# This automatically includes:
+# - All existing pools on these DEXes
+# - Any new pools created in the future
+# - Filters by minimum liquidity to focus on active markets
+
+dynamic_pools:
+  enabled: true
+  min_liquidity_usd: 50000  # Only include pools with $50k+ liquidity (fewer, better pools)
+  max_pools_per_dex: 10     # Limit to top 10 pools per DEX (faster)
+  max_scan_pools: 30        # Stop scanning after checking 30 pools (much faster startup)
+
+  # Factory contracts to scan
+  # Include multiple fee tiers for better opportunities
+  factories:
+    - name: "uniswap_v2"
+      address: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
+      fee_bps: 30  # 0.30% standard V2
+
+    - name: "sushiswap"
+      address: "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac"
+      fee_bps: 30  # 0.30% SushiSwap
+
+    # Note: Uniswap V3 requires different ABI (not V2-compatible)
+    # For V3 low-fee pools, use separate scanner or upgrade to V3 support
+    # V3 Factory: 0x1F98431c8aD98523631AE4a59f267346ea31F984
+    # Fee tiers: 0.01% (1), 0.05% (5), 0.30% (30), 1.00% (100)
+
+# Legacy static pool config (ignored if dynamic_pools.enabled = true)
+# Kept for backward compatibility
+dexes: []
+
+# Benefits of dynamic pool discovery:
+# 1. No manual pool configuration required
+# 2. Automatically discovers new pools as they're created
+# 3. Supports any token pair (including future tokens)
+# 4. Focuses on liquid markets via liquidity filtering
+# 5. Eliminates need to maintain pool lists
+# 6. Scales to hundreds or thousands of pools
+
+# Example usage:
+#   python3 -m dex.main --config configs/dex_mev_eth_dynamic.yaml
+#
+# This will:
+# 1. Scan Uniswap V2 and Sushiswap factory contracts
+# 2. Discover all pools with tokens in the whitelist
+# 3. Filter by minimum $10k liquidity
+# 4. Return top 100 pools per DEX (sorted by liquidity)
+# 5. Monitor for triangular arbitrage opportunities across ALL discovered pools

@@ -14,6 +14,7 @@ from web3 import Web3
 from web3.exceptions import ContractLogicError
 
 from .config_schema import DEXMEVConfig
+from .price_oracle import PriceOracle
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +122,10 @@ class DEXClient:
             self.account = None
             self.private_tx_enabled = False
             self.mev_relay = None
+            # Initialize price oracle for paper trading
+            self.price_oracle = PriceOracle(cache_ttl_seconds=60)
             logger.info(
-                "DEX client initialized in PAPER MODE - no blockchain connections"
+                "DEX client initialized in PAPER MODE - using dynamic price oracle"
             )
 
         logger.info(f"DEX client initialized for chain {config.network}")
@@ -270,34 +273,22 @@ class DEXClient:
             Estimated output amount
         """
         if self.paper_mode:
-            # Use mock exchange rates for paper trading
+            # Use dynamic price oracle for realistic paper trading
             logger.debug(
                 f"PAPER: Estimating swap {amount_in} {token_in} -> {token_out}"
             )
             fee = Decimal("0.997")  # 0.3% fee per leg
 
-            # Mock rates that create realistic arbitrage opportunities
-            # Designed to yield ~300-400 bps gross, ~100-150 bps net after costs
-            # Added DAI routes to fix missing mock rates for USDC -> WETH -> DAI cycles
-            if token_in == "USDC" and token_out == "WETH":
-                # 1000 USDC -> 0.5015 WETH (slightly better rate than market)
-                rate = Decimal("0.0005015")
-            elif token_in == "WETH" and token_out == "USDT":
-                # 0.5015 WETH -> 1015 USDT (premium on USDT pair)
-                rate = Decimal("2023.93")  # Creates 2.39% gain on this leg
-            elif token_in == "USDT" and token_out == "USDC":
-                # 1015 USDT -> 1035 USDC (USDC premium completes arb)
-                rate = Decimal("1.0197")  # Creates 1.97% gain on this leg
-            elif token_in == "WETH" and token_out == "DAI":
-                # 0.5015 WETH -> 1015 DAI (similar to USDT pair)
-                rate = Decimal("2023.93")  # Creates 2.39% gain on this leg
-            elif token_in == "DAI" and token_out == "USDC":
-                # 1015 DAI -> 1035 USDC (DAI to USDC completes arb)
-                rate = Decimal("1.0197")  # Creates 1.97% gain on this leg
-            else:
-                # Default small edge for unmocked pairs
-                rate = Decimal("1.0015")
+            # Get real market rate from price oracle
+            rate = self.price_oracle.get_price(token_in, token_out)
 
+            if rate is None:
+                logger.warning(
+                    f"Could not get price for {token_in}/{token_out}, using fallback"
+                )
+                rate = Decimal("1.0")  # 1:1 fallback
+
+            logger.debug(f"Oracle rate for {token_in}/{token_out}: {rate}")
             return amount_in * rate * fee
 
         # Get token addresses

@@ -32,6 +32,7 @@ function SettingsPanel({ botRunning }) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-API-Key': process.env.REACT_APP_WEB_API_KEY || ''
         },
         body: JSON.stringify(config),
       });

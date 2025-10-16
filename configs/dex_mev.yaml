@@ -35,12 +35,12 @@ tokens:
 # - Most DEXes use custom AMM models
 #
 # RECOMMENDATION:
-# 1. Use configs/dex_mev_eth_test.yaml to test the system on Ethereum
-# 2. Manually search BaseScan for V2-style pair contracts
+# 1. Use configs/dex_mev_eth_dynamic.yaml for automatic pool discovery on Ethereum
+# 2. Manually search BaseScan for V2-style pair contracts on Base
 # 3. Use scripts/check_pair.py to verify any address you find
 #
 # For now, this config needs valid Base V2 pool addresses.
-# Use configs/dex_mev_eth_test.yaml for a working Ethereum example.
+# Use configs/dex_mev_eth_dynamic.yaml for a working Ethereum example with automatic discovery.
 # Or use scripts/scan_base_pairs.py to find real Base pools.
 
 dexes: []
@@ -71,5 +71,5 @@ dexes: []
 # To verify pools:
 #   python3 scripts/check_pair.py https://mainnet.base.org 0xPAIR_ADDRESS
 #
-# To test the system:
-#   python3 run_dex_paper.py --config configs/dex_mev_eth_test.yaml
+# To test the system with automatic pool discovery:
+#   python3 run_dex_paper.py --config configs/dex_mev_eth_dynamic.yaml

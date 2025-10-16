@@ -133,65 +133,105 @@ def build_graph(
 
 
 def find_opportunities(
-    graph: nx.DiGraph, owned_assets: Optional[List[str]] = None
-) -> Optional[Tuple[List[str], float]]:
+    graph: nx.DiGraph,
+    owned_assets: Optional[List[str]] = None,
+    max_opportunities: int = 1,
+) -> List[Tuple[List[str], float]]:
     """
     Find the best triangular arbitrage opportunities in the graph.
 
     Args:
         graph: NetworkX directed graph with currency exchange rates
         owned_assets: Optional list of assets that must be included in the cycle
+        max_opportunities: Maximum number of opportunities to return (default: 1)
 
     Returns:
-        Tuple of (cycle currencies list, profit percentage) or None if none found
+        List of tuples (cycle currencies list, profit percentage), sorted by profit
+        Returns empty list if no opportunities found
     """
-    # Track removed edges so we can restore them
+    opportunities = []
     removed_edges = []
+    seen_cycles = set()  # Track cycles we've already found to avoid duplicates
 
-    # Loop until we find a valid cycle or exhaust all possibilities
-    while True:
+    # Helper function to normalize cycle for deduplication
+    def normalize_cycle(cycle_list):
+        """Normalize cycle to start from smallest element for comparison."""
+        if not cycle_list:
+            return tuple()
+        min_idx = cycle_list.index(min(cycle_list))
+        normalized = cycle_list[min_idx:] + cycle_list[:min_idx]
+        return tuple(normalized)
+
+    # Loop until we find max_opportunities or exhaust all possibilities
+    while len(opportunities) < max_opportunities:
         cycle = None
         try:
             # Find any negative cycle in the graph
-            # Start from an arbitrary node; algorithm finds cycle if it exists
             if not graph.nodes:
                 break
             start_node = list(graph.nodes)[0]
             cycle = nx.find_negative_cycle(graph, source=start_node)
         except (nx.NetworkXError, IndexError):
-            # This means no more negative cycles can be found in the graph
+            # No more negative cycles can be found in the graph
             break
+
+        if not cycle:
+            break
+
+        # Calculate profit for this cycle
+        edges = list(zip(cycle, cycle[1:]))
+        cycle_weight = sum(graph[u][v]["weight"] for u, v in edges)
+        profit_percentage = (math.exp(-cycle_weight) - 1) * 100
+
+        # Only consider cycles with positive profit
+        if profit_percentage <= 0:
+            # Remove an edge and continue searching
+            u, v = cycle[0], cycle[1]
+            edge_data = graph[u][v]
+            removed_edges.append((u, v, edge_data))
+            graph.remove_edge(u, v)
+            continue
+
+        # Check for duplicate cycles (same currencies, different starting point)
+        cycle_currencies = cycle[:-1]  # Remove duplicate last element
+        normalized = normalize_cycle(cycle_currencies)
+
+        if normalized in seen_cycles:
+            # This is a duplicate cycle, remove an edge and continue
+            u, v = cycle[0], cycle[1]
+            edge_data = graph[u][v]
+            removed_edges.append((u, v, edge_data))
+            graph.remove_edge(u, v)
+            continue
 
         # If in actionable mode, check if the cycle starts with an owned asset
         if owned_assets:
-            if cycle[0] in owned_assets:
-                # This is a valid, actionable cycle. We're done.
-                break
-            else:
-                # This cycle is not actionable. "Disqualify" it by removing an edge
-                # and loop again to find the next best one.
+            if cycle[0] not in owned_assets:
+                # This cycle is not actionable. Remove an edge and continue
                 u, v = cycle[0], cycle[1]
                 edge_data = graph[u][v]
                 removed_edges.append((u, v, edge_data))
                 graph.remove_edge(u, v)
-                cycle = None  # Reset cycle to continue searching
                 continue
-        else:
-            # Not in actionable mode, so any cycle is fine.
-            break
+
+        # Valid opportunity found!
+        seen_cycles.add(normalized)
+        opportunities.append((cycle_currencies, profit_percentage))
+
+        # Remove an edge from this cycle to find the next best one
+        u, v = cycle[0], cycle[1]
+        edge_data = graph[u][v]
+        removed_edges.append((u, v, edge_data))
+        graph.remove_edge(u, v)
 
     # Restore all removed edges to keep graph intact
     for u, v, edge_data in removed_edges:
         graph.add_edge(u, v, **edge_data)
 
-    # If we have a valid cycle, calculate its profit
-    if cycle:
-        edges = list(zip(cycle, cycle[1:]))
-        cycle_weight = sum(graph[u][v]["weight"] for u, v in edges)
-        profit_percentage = (math.exp(-cycle_weight) - 1) * 100
-        return (cycle[:-1], profit_percentage)
+    # Sort opportunities by profit (highest first)
+    opportunities.sort(key=lambda x: x[1], reverse=True)
 
-    return None
+    return opportunities
 
 
 async def run_detection(
@@ -201,6 +241,7 @@ async def run_detection(
     ignored_symbols=None,
     whitelisted_symbols=None,
     use_bid_ask=False,
+    max_opportunities=1,
 ):
     """Run arbitrage detection process.
 
@@ -213,9 +254,12 @@ async def run_detection(
         ignored_symbols: Optional list of symbols to ignore
         whitelisted_symbols: Optional list of symbols to whitelist
         use_bid_ask: If True, use bid/ask prices for conservative estimates
+        max_opportunities: Maximum number of opportunities to return (default: 1)
 
     Returns:
-        Tuple of (cycle, profit_percentage) or None if no opportunity found
+        If max_opportunities=1: Tuple of (cycle, profit_percentage) or None
+        If max_opportunities>1: List of tuples [(cycle, profit_percentage), ...]
+            or empty list if no opportunities found
 
     Raises:
         ValidationError: If exchange_name is invalid
@@ -264,28 +308,39 @@ async def run_detection(
 
     search_type = "actionable" if owned_assets else "general"
     logger.debug("Step 3: Analyzing graph for %s trading cycles...", search_type)
-    opportunity = find_opportunities(graph, owned_assets)
+    opportunities = find_opportunities(graph, owned_assets, max_opportunities)
     logger.debug("Analysis complete.")
 
-    if opportunity:
-        cycle, profit = opportunity
+    if opportunities:
         fee_percentage = trade_fee * 100
-
         header = (
-            f"Actionable Trade Path Found on {exchange_name.capitalize()}"
+            f"Actionable Trade Path{'s' if len(opportunities) > 1 else ''} "
+            f"Found on {exchange_name.capitalize()}"
             if owned_assets
-            else f"Profitable Trade Path Found on {exchange_name.capitalize()}"
+            else f"Profitable Trade Path{'s' if len(opportunities) > 1 else ''} "
+            f"Found on {exchange_name.capitalize()}"
         )
         logger.info("%s", "=" * 70)
         logger.info(header)
         logger.info("(Includes %.2f%% fee per trade)", fee_percentage)
         logger.info("%s", "=" * 70)
 
-        status = "Profit" if profit > 0 else "Loss"
-        logger.info("Estimated %s: %.4f%%", status, profit)
-        logger.info("Path: %s -> %s", " -> ".join(cycle), cycle[0])
+        # Log all opportunities
+        for idx, (cycle, profit) in enumerate(opportunities, 1):
+            status = "Profit" if profit > 0 else "Loss"
+            if len(opportunities) > 1:
+                logger.info("")
+                logger.info("Opportunity #%d:", idx)
+            logger.info("  Estimated %s: %.4f%%", status, profit)
+            logger.info("  Path: %s -> %s", " -> ".join(cycle), cycle[0])
+
         logger.info("%s", "=" * 70)
-        return opportunity
+
+        # Return format depends on max_opportunities
+        if max_opportunities == 1:
+            return opportunities[0]  # Backward compatible: return single tuple
+        else:
+            return opportunities  # Return list of tuples
     else:
         message = (
             "No profitable trading cycles found that start with your available assets."
@@ -293,7 +348,12 @@ async def run_detection(
             else "No profitable trading cycles found at this time."
         )
         logger.info(message)
-        return None
+
+        # Return format depends on max_opportunities
+        if max_opportunities == 1:
+            return None  # Backward compatible
+        else:
+            return []  # Return empty list
 
 
 def get_best_triangular_opportunity(
@@ -387,14 +447,14 @@ def get_best_opportunity(
             ticker_dict["ask"] = ticker.ask
         ticker_data[str(ticker.symbol)] = ticker_dict
 
-    # Build graph and find opportunities
+    # Build graph and find opportunities (get only the best one)
     graph = build_graph(ticker_data, trade_fee, use_bid_ask=use_bid_ask)
-    opportunity = find_opportunities(graph)
+    opportunities = find_opportunities(graph, max_opportunities=1)
 
-    if not opportunity:
+    if not opportunities:
         return None, 1.0
 
-    cycle_currencies, profit_percentage = opportunity
+    cycle_currencies, profit_percentage = opportunities[0]
 
     # Construct the ticker path from the cycle
     ticker_path = []
