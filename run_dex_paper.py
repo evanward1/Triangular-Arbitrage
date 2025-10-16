@@ -45,8 +45,8 @@ Examples:
 
     parser.add_argument(
         "--config",
-        default="configs/dex_mev_eth_test.yaml",
-        help="Path to config YAML file (default: configs/dex_mev_eth_test.yaml)",
+        default="configs/dex_mev_eth_dynamic.yaml",
+        help="Path to config YAML file (default: configs/dex_mev_eth_dynamic.yaml)",
     )
 
     parser.add_argument(

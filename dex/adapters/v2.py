@@ -74,26 +74,84 @@ def fetch_pool(
 
 
 async def fetch_pool_async(
-    web3: Web3, pair_addr: str
+    web3: Web3, pair_addr: str, max_retries: int = 3
 ) -> Tuple[str, str, Decimal, Decimal]:
     """
     Async version: Fetch token addresses and reserves from a Uniswap V2 style pair.
 
     Runs the synchronous RPC calls in a thread pool to avoid blocking the event loop.
+    Includes exponential backoff for rate limit errors.
 
     Args:
         web3: Web3 instance connected to the chain
         pair_addr: Checksummed address of the pair contract
+        max_retries: Maximum number of retry attempts (default: 3)
 
     Returns:
         Tuple of (token0_addr, token1_addr, reserve0, reserve1)
 
     Raises:
-        Web3Exception: If RPC calls fail
+        Web3Exception: If RPC calls fail after all retries
         ValueError: If pair address is invalid
     """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, fetch_pool, web3, pair_addr)
+    if not Web3.is_checksum_address(pair_addr):
+        raise ValueError(f"Invalid pair address: {pair_addr}")
+
+    pair = web3.eth.contract(address=pair_addr, abi=UNISWAP_V2_PAIR_ABI)
+    last_error = None
+
+    for attempt in range(max_retries):
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Fetch all data in parallel using thread pool
+            token0_task = loop.run_in_executor(None, pair.functions.token0().call)
+            token1_task = loop.run_in_executor(None, pair.functions.token1().call)
+            reserves_task = loop.run_in_executor(
+                None, pair.functions.getReserves().call
+            )
+
+            token0, token1, reserves = await asyncio.gather(
+                token0_task, token1_task, reserves_task
+            )
+
+            r0 = Decimal(reserves[0])
+            r1 = Decimal(reserves[1])
+
+            return (
+                Web3.to_checksum_address(token0),
+                Web3.to_checksum_address(token1),
+                r0,
+                r1,
+            )
+        except Exception as e:
+            last_error = e
+            error_msg = str(e)
+
+            # Check for rate limit errors (common patterns)
+            is_rate_limit = (
+                "429" in error_msg
+                or "Too Many Requests" in error_msg
+                or "-32005" in error_msg  # BSC/Ethereum rate limit code
+                or "limit exceeded" in error_msg.lower()
+            )
+
+            if is_rate_limit and attempt < max_retries - 1:
+                # Exponential backoff with jitter: 2s, 4s, 8s
+                wait_time = (2 ** (attempt + 1)) + (attempt * 0.5)
+                await asyncio.sleep(wait_time)
+                continue
+
+            # For non-rate-limit errors or last attempt, raise
+            if attempt == max_retries - 1:
+                raise Web3Exception(
+                    f"Failed to fetch pool {pair_addr} after {max_retries} retries: {error_msg}"
+                ) from e
+
+    # Should never reach here, but for type safety
+    raise Web3Exception(
+        f"Failed to fetch pool {pair_addr}: {last_error}"
+    ) from last_error
 
 
 def swap_out(

@@ -113,14 +113,14 @@ case $choice in
         echo -e "${BLUE}📝 Starting paper trading...${NC}"
         echo -e "${YELLOW}💡 Press Ctrl+C to stop${NC}"
         echo ""
-        python run_clean.py 1
+        python run_clean.py cex --paper
         ;;
     3)
         echo -e "${RED}⚠️  WARNING: This uses REAL MONEY!${NC}"
         read -p "Are you sure? Type 'YES' to continue: " confirm
         if [ "$confirm" = "YES" ]; then
             echo -e "${BLUE}💰 Starting live trading...${NC}"
-            python run_clean.py 2
+            python run_clean.py cex --live
         else
             echo "Cancelled."
         fi

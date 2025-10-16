@@ -66,22 +66,16 @@ class TradingMode(str, Enum):
     LIVE = "live"  # Live trading with real broadcasts
 
 
-# Setup logging with clean configuration
-import logging_config
-
-logging_config.setup()
+# Setup logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Triangular Arbitrage Dashboard")
 
-# Initialize security manager (auth disabled by default for local use)
+# Initialize security manager
 _api_key = os.getenv("WEB_API_KEY")
-_enable_auth = (
-    os.getenv("WEB_ENABLE_AUTH", "false").lower() == "true"
-)  # Disabled by default
-_enable_rate_limit = (
-    os.getenv("WEB_ENABLE_RATE_LIMIT", "false").lower() == "true"
-)  # Disabled by default
+_enable_auth = os.getenv("WEB_ENABLE_AUTH", "true").lower() == "true"
+_enable_rate_limit = os.getenv("WEB_ENABLE_RATE_LIMIT", "true").lower() == "true"
 _rate_limit_per_min = int(os.getenv("WEB_RATE_LIMIT_PER_MIN", "60"))
 
 security_manager = SecurityManager(
@@ -1076,8 +1070,8 @@ async def run_dex_scanner():
     Only broadcasts transactions in live mode.
     """
     try:
-        from dex.config import ConfigError, load_config
         from dex.runner import DexRunner
+        from dex.config import load_config, ConfigError
 
         scan_count = 0
         current_equity = 1000.0
@@ -1110,8 +1104,8 @@ async def run_dex_scanner():
                 dex_state.running = False
                 return
 
-        # Load DEX config - default to BSC (best for finding opportunities)
-        config_path = os.getenv("DEX_CONFIG_PATH", "configs/dex_bsc_dynamic.yaml")
+        # Load DEX config
+        config_path = os.getenv("DEX_CONFIG_PATH", "configs/dex_mev_eth_test.yaml")
         try:
             dex_config = load_config(config_path)
             logger.info(f"Loaded DEX config from {config_path}")
@@ -1192,103 +1186,219 @@ async def run_dex_scanner():
                 arb_rows = await runner.scan_async()
 
                 # Convert ArbRow results to DexOpportunity format
-                for row in arb_rows:
-                    # Extract path tokens from cycle string
-                    # row.cycle format: "USDC -> WETH (uniswap_v2) -> USDC (sushiswap)"
-                    cycle_parts = row.cycle.split(" -> ")
-                    path_tokens = []
+                if arb_rows:
+                    {
+                        "path": ["USDC", "WETH", "DAI", "USDC"],
+                        "legs": [
+                            {"pair": "USDC/WETH", "side": "buy", "price": 2500.0, "liq_usd": 50000.0, "slip_bps_est": 0.5,
+                             "dex": "uniswap_v2", "type": "v2", "pool": "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc",
+                             "token_in": "USDC", "token_out": "WETH"},
+                            {"pair": "WETH/DAI", "side": "sell", "price": 2505.0, "liq_usd": 45000.0, "slip_bps_est": 1.0,
+                             "dex": "uniswap_v2", "type": "v2", "pool": "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11",
+                             "token_in": "WETH", "token_out": "DAI"},
+                            {"pair": "DAI/USDC", "side": "sell", "price": 1.001, "liq_usd": 60000.0, "slip_bps_est": 0.5,
+                             "dex": "uniswap_v2", "type": "v2", "pool": "0xAE461cA67B15dc8dc81CE7615e0320dA1A9aB8D5",
+                             "token_in": "DAI", "token_out": "USDC"},
+                        ]
+                    },
+                    {
+                        "path": ["USDT", "WETH", "USDC", "USDT"],
+                        "legs": [
+                            {"pair": "USDT/WETH", "side": "buy", "price": 2498.0, "liq_usd": 48000.0, "slip_bps_est": 0.6,
+                             "dex": "sushiswap", "type": "v2", "pool": "0x06da0fd433C1A5d7a4faa01111c044910A184553",
+                             "token_in": "USDT", "token_out": "WETH"},
+                            {"pair": "WETH/USDC", "side": "sell", "price": 2502.0, "liq_usd": 52000.0, "slip_bps_est": 0.7,
+                             "dex": "uniswap_v3", "type": "v3", "pool": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+                             "token_in": "WETH", "token_out": "USDC"},
+                            {"pair": "USDC/USDT", "side": "sell", "price": 0.9995, "liq_usd": 80000.0, "slip_bps_est": 0.3,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "USDC", "token_out": "USDT"},
+                        ]
+                    },
+                    {
+                        "path": ["DAI", "USDC", "WETH", "DAI"],
+                        "legs": [
+                            {"pair": "DAI/USDC", "side": "buy", "price": 0.999, "liq_usd": 65000.0, "slip_bps_est": 0.4,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "DAI", "token_out": "USDC"},
+                            {"pair": "USDC/WETH", "side": "sell", "price": 2499.0, "liq_usd": 55000.0, "slip_bps_est": 0.8,
+                             "dex": "uniswap_v2", "type": "v2", "pool": "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc",
+                             "token_in": "USDC", "token_out": "WETH"},
+                            {"pair": "WETH/DAI", "side": "sell", "price": 2506.0, "liq_usd": 44000.0, "slip_bps_est": 0.9,
+                             "dex": "sushiswap", "type": "v2", "pool": "0xC3D03e4F041Fd4cD388c549Ee2A29a9E5075882f",
+                             "token_in": "WETH", "token_out": "DAI"},
+                        ]
+                    },
+                    {
+                        "path": ["WBTC", "WETH", "USDC", "WBTC"],
+                        "legs": [
+                            {"pair": "WBTC/WETH", "side": "buy", "price": 15.2, "liq_usd": 35000.0, "slip_bps_est": 1.2,
+                             "dex": "uniswap_v2", "type": "v2", "pool": "0xBb2b8038a1640196FbE3e38816F3e67Cba72D940",
+                             "token_in": "WBTC", "token_out": "WETH"},
+                            {"pair": "WETH/USDC", "side": "sell", "price": 2501.0, "liq_usd": 51000.0, "slip_bps_est": 0.6,
+                             "dex": "uniswap_v3", "type": "v3", "pool": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+                             "token_in": "WETH", "token_out": "USDC"},
+                            {"pair": "USDC/WBTC", "side": "sell", "price": 38100.0, "liq_usd": 42000.0, "slip_bps_est": 1.0,
+                             "dex": "sushiswap", "type": "v2", "pool": "0x004375Dff511095CC5A197A54140a24eFEF3A416",
+                             "token_in": "USDC", "token_out": "WBTC"},
+                        ]
+                    },
+                    {
+                        "path": ["USDC", "WBTC", "WETH", "USDC"],
+                        "legs": [
+                            {"pair": "USDC/WBTC", "side": "buy", "price": 38050.0, "liq_usd": 41000.0, "slip_bps_est": 1.1,
+                             "dex": "uniswap_v3", "type": "v3", "pool": "0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35",
+                             "token_in": "USDC", "token_out": "WBTC"},
+                            {"pair": "WBTC/WETH", "side": "sell", "price": 15.25, "liq_usd": 36000.0, "slip_bps_est": 1.3,
+                             "dex": "sushiswap", "type": "v2", "pool": "0xCEfF51756c56CeFFCA006cD410B03FFC46dd3a58",
+                             "token_in": "WBTC", "token_out": "WETH"},
+                            {"pair": "WETH/USDC", "side": "sell", "price": 2503.0, "liq_usd": 53000.0, "slip_bps_est": 0.7,
+                             "dex": "uniswap_v2", "type": "v2", "pool": "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc",
+                             "token_in": "WETH", "token_out": "USDC"},
+                        ]
+                    },
+                    {
+                        "path": ["USDT", "DAI", "USDC", "USDT"],
+                        "legs": [
+                            {"pair": "USDT/DAI", "side": "buy", "price": 1.0002, "liq_usd": 75000.0, "slip_bps_est": 0.2,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "USDT", "token_out": "DAI"},
+                            {"pair": "DAI/USDC", "side": "sell", "price": 1.0001, "liq_usd": 72000.0, "slip_bps_est": 0.2,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "DAI", "token_out": "USDC"},
+                            {"pair": "USDC/USDT", "side": "sell", "price": 0.9996, "liq_usd": 78000.0, "slip_bps_est": 0.25,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "USDC", "token_out": "USDT"},
+                        ]
+                    },
+                    {
+                        "path": ["WETH", "USDT", "USDC", "WETH"],
+                        "legs": [
+                            {"pair": "WETH/USDT", "side": "buy", "price": 2497.0, "liq_usd": 47000.0, "slip_bps_est": 0.7,
+                             "dex": "uniswap_v2", "type": "v2", "pool": "0x0d4a11d5EEaaC28EC3F61d100daF4d40471f1852",
+                             "token_in": "WETH", "token_out": "USDT"},
+                            {"pair": "USDT/USDC", "side": "sell", "price": 1.0003, "liq_usd": 76000.0, "slip_bps_est": 0.3,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "USDT", "token_out": "USDC"},
+                            {"pair": "USDC/WETH", "side": "sell", "price": 2500.0, "liq_usd": 54000.0, "slip_bps_est": 0.6,
+                             "dex": "uniswap_v3", "type": "v3", "pool": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+                             "token_in": "USDC", "token_out": "WETH"},
+                        ]
+                    },
+                    {
+                        "path": ["DAI", "WETH", "USDT", "DAI"],
+                        "legs": [
+                            {"pair": "DAI/WETH", "side": "buy", "price": 2504.0, "liq_usd": 46000.0, "slip_bps_est": 0.8,
+                             "dex": "uniswap_v2", "type": "v2", "pool": "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11",
+                             "token_in": "DAI", "token_out": "WETH"},
+                            {"pair": "WETH/USDT", "side": "sell", "price": 2496.0, "liq_usd": 48000.0, "slip_bps_est": 0.75,
+                             "dex": "sushiswap", "type": "v2", "pool": "0x06da0fd433C1A5d7a4faa01111c044910A184553",
+                             "token_in": "WETH", "token_out": "USDT"},
+                            {"pair": "USDT/DAI", "side": "sell", "price": 0.9998, "liq_usd": 77000.0, "slip_bps_est": 0.2,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "USDT", "token_out": "DAI"},
+                        ]
+                    },
+                    {
+                        "path": ["USDC", "DAI", "WETH", "USDC"],
+                        "legs": [
+                            {"pair": "USDC/DAI", "side": "buy", "price": 1.0004, "liq_usd": 73000.0, "slip_bps_est": 0.3,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "USDC", "token_out": "DAI"},
+                            {"pair": "DAI/WETH", "side": "sell", "price": 2507.0, "liq_usd": 43000.0, "slip_bps_est": 0.95,
+                             "dex": "sushiswap", "type": "v2", "pool": "0xC3D03e4F041Fd4cD388c549Ee2A29a9E5075882f",
+                             "token_in": "DAI", "token_out": "WETH"},
+                            {"pair": "WETH/USDC", "side": "sell", "price": 2498.0, "liq_usd": 49000.0, "slip_bps_est": 0.65,
+                             "dex": "uniswap_v3", "type": "v3", "pool": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+                             "token_in": "WETH", "token_out": "USDC"},
+                        ]
+                    },
+                    {
+                        "path": ["USDT", "USDC", "DAI", "USDT"],
+                        "legs": [
+                            {"pair": "USDT/USDC", "side": "buy", "price": 0.9997, "liq_usd": 79000.0, "slip_bps_est": 0.25,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "USDT", "token_out": "USDC"},
+                            {"pair": "USDC/DAI", "side": "sell", "price": 1.0003, "liq_usd": 74000.0, "slip_bps_est": 0.3,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "USDC", "token_out": "DAI"},
+                            {"pair": "DAI/USDT", "side": "sell", "price": 1.0005, "liq_usd": 71000.0, "slip_bps_est": 0.22,
+                             "dex": "curve", "type": "stable", "pool": "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+                             "token_in": "DAI", "token_out": "USDT"},
+                        ]
+                    },
+                ]
 
-                    for part in cycle_parts:
-                        # Extract token before parentheses or use whole part
-                        token = (
-                            part.split("(")[0].strip() if "(" in part else part.strip()
-                        )
-                        # Add token if it's new or it's the closing token
-                        if not path_tokens or token != path_tokens[-1]:
-                            path_tokens.append(token)
+                # Generate 1-3 opportunities per scan (randomized)
+                num_opps = random.randint(1, 3)
+                selected_paths = random.sample(all_paths, num_opps)
 
-                    # Ensure path closes (last token = first token)
-                    if path_tokens and path_tokens[-1] != path_tokens[0]:
-                        path_tokens.append(path_tokens[0])
+                for path_config in selected_paths:
+                    legs = path_config["legs"]
+                    path = path_config["path"]
 
-                    # Create basic leg structure from available data
-                    # Note: DexRunner ArbRow doesn't have detailed leg info
-                    # In production, enhance DexRunner to return per-leg details
-                    legs = [
-                        {
-                            "pair": row.pair,
-                            "side": "buy",  # Simplified - would need actual direction
-                            "price": 0.0,
-                            "liq_usd": 50000.0,  # Placeholder
-                            "slip_bps_est": runner.config.slippage_pct * 100,
-                            "dex": row.dexA,
-                            "type": "v2",
-                            "pool": "0x0000000000000000000000000000000000000000",
-                            "token_in": path_tokens[0]
-                            if len(path_tokens) > 0
-                            else "UNKNOWN",
-                            "token_out": path_tokens[1]
-                            if len(path_tokens) > 1
-                            else "UNKNOWN",
-                        },
-                        {
-                            "pair": row.pair,
-                            "side": "sell",
-                            "price": 0.0,
-                            "liq_usd": 50000.0,
-                            "slip_bps_est": runner.config.slippage_pct * 100,
-                            "dex": row.dexB,
-                            "type": "v2",
-                            "pool": "0x0000000000000000000000000000000000000000",
-                            "token_in": path_tokens[1]
-                            if len(path_tokens) > 1
-                            else "UNKNOWN",
-                            "token_out": path_tokens[0]
-                            if len(path_tokens) > 0
-                            else "UNKNOWN",
-                        },
-                    ]
-
-                    # Compute costs for the route
+                    # Compute costs using live_costs module (or mocks if no Web3)
                     size_usd = dex_state.config["size_usd"]
                     costs = compute_costs_for_route(
-                        web3=web3_instance,
+                        web3=web3_instance,  # None if no RPC URL
                         route_legs=legs,
                         size_usd=size_usd,
-                        eth_usd=2000.0,
+                        eth_usd=2000.0,  # ETH price estimate
                     )
 
-                    # Use breakdown from opportunity math
+                    # Extract cost components from result
+                    fee_bps = costs["fee_bps"]
+                    # Use configured safety margin (not computed price impact)
+                    # For test mode, use 0.02% (2 bps) as configured value
+                    safety_bps = 2.0  # 0.02% configured safety margin
+                    gas_usd = (
+                        costs["gas_bps"] / 10000.0
+                    ) * size_usd  # Convert gas_bps to USD
+
+                    # Mock gross profit (in production, from price feed)
+                    # Set high enough to be profitable after costs
+                    # (fees ~90 bps + safety ~2 bps + gas ~18 bps = 110 bps)
+                    # Add realistic variation to simulate market fluctuations
+                    gross_bps = 100.0 + random.uniform(
+                        0, 100
+                    )  # 1.00% to 2.00% gross profit
+                    # Vary gas cost to simulate network conditions
+                    gas_usd = gas_usd * random.uniform(0.5, 2.0)  # ±50% gas variation
+
+                    # Use single source of truth for all calculations
                     breakdown = compute_opportunity_breakdown(
-                        gross_bps=row.gross_pct * 100,
-                        fee_bps=costs["fee_bps"],
-                        safety_bps=runner.config.slippage_pct * 100,
-                        gas_usd=(costs["gas_bps"] / 10000.0) * size_usd,
+                        gross_bps=gross_bps,
+                        fee_bps=fee_bps,
+                        safety_bps=safety_bps,  # Use configured safety margin
+                        gas_usd=gas_usd,
                         trade_amount_usd=size_usd,
                     )
 
-                    # Create DexOpportunity from real data
+                    # Create opportunity from breakdown (single source of truth)
                     opp = DexOpportunity(
-                        id=f"dexop_{scan_count}_{row.pair}_{row.dexA}_{row.dexB}",
-                        path=path_tokens,
-                        gross_bps=row.gross_pct * 100,
-                        gross_pct=row.gross_pct,
-                        fee_bps=costs["fee_bps"],
-                        fee_pct=costs["fee_bps"] / 100,
-                        slip_bps=runner.config.slippage_pct * 100,
-                        slip_pct=runner.config.slippage_pct,
-                        gas_bps=costs["gas_bps"],
-                        gas_pct=costs["gas_bps"] / 100,
-                        net_bps=row.net_pct * 100,
-                        net_pct=row.net_pct,
+                        id=f"dexop_{scan_count}_{path[0]}",
+                        path=path,
+                        gross_bps=gross_bps,
+                        gross_pct=float(breakdown.gross_pct),
+                        fee_bps=fee_bps,
+                        fee_pct=float(breakdown.fee_pct),
+                        slip_bps=safety_bps,  # Use configured safety margin
+                        slip_pct=float(breakdown.safety_pct),
+                        gas_bps=float(
+                            breakdown.gas_pct * 100
+                        ),  # Convert pct to bps for storage
+                        gas_pct=float(breakdown.gas_pct),
+                        net_bps=float(
+                            breakdown.net_pct * 100
+                        ),  # Convert pct to bps for storage
+                        net_pct=float(breakdown.net_pct),
                         size_usd=size_usd,
                         legs=legs,
                         ts=time.time(),
                     )
-
                     dex_state.add_opportunity(opp)
 
-                    # Log opportunity found
+                    # Log opportunity found using breakdown format
                     path_str = " → ".join(opp.path)
                     dex_state.add_log(f"💡 Found: {path_str} • {breakdown.format_log()}")
 
@@ -1297,111 +1407,111 @@ async def run_dex_scanner():
                         {"type": "opportunity", "data": opp.model_dump()}
                     )
 
-                    # Evaluate with DecisionEngine
-                    if dex_state.decision_engine and row.net_pct >= (
-                        dex_state.config["min_profit_threshold_bps"] / 100.0
-                    ):
-                        decision = dex_state.decision_engine.evaluate_opportunity(
-                            gross_pct=opp.gross_bps / 100.0,
-                            fees_pct=opp.fee_bps / 100.0,
-                            slip_pct=opp.slip_bps / 100.0,
-                            gas_pct=opp.gas_bps / 100.0,
-                            size_usd=opp.size_usd,
-                            has_quote=True,
-                            has_gas_estimate=True,
-                        )
+                # Evaluate opportunity with DecisionEngine
+                # Use exact costs from the opportunity (single source of truth)
+                decision = dex_state.decision_engine.evaluate_opportunity(
+                    gross_pct=opp.gross_bps / 100.0,
+                    fees_pct=opp.fee_bps / 100.0,  # Use opportunity's fee_bps
+                    slip_pct=opp.slip_bps / 100.0,
+                    gas_pct=opp.gas_bps / 100.0,
+                    size_usd=opp.size_usd,
+                    has_quote=True,  # Mock always has quotes
+                    has_gas_estimate=True,  # Mock always has gas estimates
+                )
 
-                        # Log decision
-                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        decision_log = dex_state.decision_engine.format_decision_log(
-                            decision, timestamp
-                        )
-                        logger.info(decision_log)
+                # Log the decision in server logs (detailed)
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                decision_log = dex_state.decision_engine.format_decision_log(
+                    decision, timestamp
+                )
+                logger.info(decision_log)
 
-                        # Check deduplication
-                        if decision.action == "EXECUTE":
-                            pool_addresses = [leg.get("pool", "") for leg in opp.legs]
-                            route_id = deduplicator.create_route_id(
-                                opp.path, pool_addresses
-                            )
-                            fingerprint = deduplicator.create_fingerprint(
-                                route_id=route_id,
-                                block_number=scan_count,
-                                gross_bps=opp.gross_bps,
-                                fee_bps=opp.fee_bps,
-                                gas_usd=float(breakdown.gas_usd),
-                            )
+                # Execute only if decision is EXECUTE, then apply dedup gates
+                if decision.action == "EXECUTE":
+                    # Check deduplication before executing
+                    # Create route_id and fingerprint
+                    pool_addresses = [leg.get("pool", "") for leg in opp.legs]
+                    route_id = deduplicator.create_route_id(opp.path, pool_addresses)
+                    fingerprint = deduplicator.create_fingerprint(
+                        route_id=route_id,
+                        block_number=scan_count,  # Use scan count as proxy for block
+                        gross_bps=opp.gross_bps,
+                        fee_bps=opp.fee_bps,
+                        gas_usd=float(breakdown.gas_usd),
+                    )
 
-                            should_execute, skip_reason = deduplicator.should_execute(
-                                route_id=route_id,
-                                fingerprint=fingerprint,
-                                block_number=scan_count,
-                                net_pct=opp.net_pct,
-                                now=time.time(),
-                            )
+                    # Check if should execute
+                    should_execute, skip_reason = deduplicator.should_execute(
+                        route_id=route_id,
+                        fingerprint=fingerprint,
+                        block_number=scan_count,
+                        net_pct=opp.net_pct,
+                        now=time.time(),
+                    )
 
-                            if not should_execute:
-                                decision.action = "SKIP"
-                                if skip_reason and skip_reason not in decision.reasons:
-                                    decision.reasons.append(skip_reason)
-                                dex_state.add_log(f"⏭️  SKIP: {skip_reason}")
+                    if not should_execute:
+                        # Flip decision to SKIP and attach reason for UI
+                        decision.action = "SKIP"
+                        if skip_reason and skip_reason not in decision.reasons:
+                            decision.reasons.append(skip_reason)
+                        dex_state.add_log(f"⏭️  SKIP: {skip_reason}")
+                        # fall through to record and broadcast the SKIP
 
-                        # Record decision
-                        dex_state.add_decision(decision.to_dict())
-                        await dex_state.broadcast_ws(
-                            {"type": "decision", "data": decision.to_dict()}
-                        )
+                # Record the final decision after dedup gates
+                dex_state.add_decision(decision.to_dict())
+                await dex_state.broadcast_ws(
+                    {"type": "decision", "data": decision.to_dict()}
+                )
 
-                        # Execute if still approved
-                        if decision.action == "EXECUTE":
-                            dex_state.add_log(f"Executing opportunity: {path_str}")
-                            fill = await executor.execute(opp)
+                # If action remains EXECUTE here, proceed to actually run it
+                if decision.action == "EXECUTE":
+                    # Execute the opportunity
+                    dex_state.add_log(f"Executing opportunity: {path_str}")
+                    fill = await executor.execute(opp)
 
-                            # Record execution
-                            deduplicator.record_execution(
-                                route_id=route_id,
-                                fingerprint=fingerprint,
-                                block_number=scan_count,
-                                net_pct=opp.net_pct,
-                                now=time.time(),
-                            )
+                    # Record successful execution in deduplicator
+                    deduplicator.record_execution(
+                        route_id=route_id,
+                        fingerprint=fingerprint,
+                        block_number=scan_count,
+                        net_pct=opp.net_pct,
+                        now=time.time(),
+                    )
 
-                            # Update equity
-                            current_equity += fill.pnl_usd
-                            cumulative_pnl += fill.pnl_usd
-                            dex_state.add_fill(fill)
-                            dex_state.add_equity_point(current_equity, cumulative_pnl)
+                    # Update equity and cumulative PnL
+                    current_equity += fill.pnl_usd
+                    cumulative_pnl += fill.pnl_usd  # Track cumulative PnL separately
+                    dex_state.add_fill(fill)
+                    dex_state.add_equity_point(current_equity, cumulative_pnl)
 
-                            # Broadcast
-                            await dex_state.broadcast_ws(
-                                {
-                                    "type": "equity",
-                                    "data": {
-                                        "ts": time.time(),
-                                        "equity_usd": current_equity,
-                                        "cumulative_pnl_usd": cumulative_pnl,
-                                    },
-                                }
-                            )
+                    # Broadcast equity update (now includes cumulative PnL)
+                    await dex_state.broadcast_ws(
+                        {
+                            "type": "equity",
+                            "data": {
+                                "ts": time.time(),
+                                "equity_usd": current_equity,
+                                "cumulative_pnl_usd": cumulative_pnl,
+                            },
+                        }
+                    )
 
-                            mode_icon = "📝" if fill.paper else "💰"
-                            pnl_pct = fill.net_bps / 100
-                            log_msg = (
-                                f"{mode_icon} Trade completed: Net {pnl_pct:.3f}% = "
-                                f"${fill.pnl_usd:.2f} • Balance: ${current_equity:.2f}"
-                            )
-                            dex_state.add_log(log_msg)
+                    # Log fill result with consistent format (Net %  = PnL $)
+                    mode_icon = "📝" if fill.paper else "💰"
+                    pnl_pct = fill.net_bps / 100
+                    log_msg = (
+                        f"{mode_icon} Trade completed: Net {pnl_pct:.3f}% = "
+                        f"${fill.pnl_usd:.2f} • Balance: ${current_equity:.2f}"
+                    )
+                    dex_state.add_log(log_msg)
 
-                            await dex_state.broadcast_ws(
-                                {"type": "fill", "data": fill.model_dump()}
-                            )
-                        else:
-                            # Keep equity chart alive
-                            dex_state.add_equity_point(current_equity, cumulative_pnl)
-
-            except Exception as e:
-                logger.error(f"Scan error: {e}", exc_info=True)
-                dex_state.add_log(f"⚠️ Scan error: {str(e)}")
+                    # Broadcast fill
+                    await dex_state.broadcast_ws(
+                        {"type": "fill", "data": fill.model_dump()}
+                    )
+                else:
+                    # Decision was SKIP (either on profit math or dedup). Keep equity chart alive.
+                    dex_state.add_equity_point(current_equity, cumulative_pnl)
 
             # Broadcast status update
             await dex_state.broadcast_ws(

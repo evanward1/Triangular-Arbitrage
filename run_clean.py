@@ -3,25 +3,39 @@
 Unified Arbitrage Runner (CEX + DEX)
 
 Examples:
-  # Interactive menu
+  # Interactive menu (easiest - select from options)
   python run_clean.py
 
   # CEX paper / live
   python run_clean.py cex --paper
   python run_clean.py cex --live
 
-  # DEX paper mode (default if neither --paper nor --live specified)
-  python run_clean.py dex --paper --quiet --once
-  python run_clean.py dex --quiet --once  # same as above, --paper is default
+  # DEX paper mode (defaults to BSC - best for finding opportunities)
+  python run_clean.py dex
+  python run_clean.py dex --quiet --once
 
-  # DEX live mode (private, simulate-first assumed by your config)
-  python run_clean.py dex --live --config configs/dex_mev.example.yaml
+  # DEX with specific chain
+  python run_clean.py dex --config configs/dex_base_dynamic.yaml
+  python run_clean.py dex --config configs/dex_bsc_dynamic.yaml
+  python run_clean.py dex --config configs/dex_mev_eth_dynamic.yaml
+
+  # DEX live mode (defaults to Base - low gas for real trading)
+  python run_clean.py dex --live
 """
 import argparse
+import logging
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",  # Simple format for user-facing messages
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger(__name__)
 
 # ---------- helpers ----------
 
@@ -42,7 +56,7 @@ def run(cmd):
     try:
         return subprocess.run(cmd, check=False).returncode
     except KeyboardInterrupt:
-        print("\n⏸ Stopped by user")
+        logger.info("\n⏸ Stopped by user")
         return 0
 
 
@@ -57,10 +71,7 @@ def run_dex(args):
     """
     entry = file_exists("run_dex_paper.py", "backtests/run_dex_paper.py")
     if not entry:
-        print(
-            "❌ Could not find run_dex_paper.py (tried ./ and ./backtests/).",
-            file=sys.stderr,
-        )
+        logger.error("❌ Could not find run_dex_paper.py (tried ./ and ./backtests/).")
         return 1
 
     cmd = [sys.executable, str(entry)]
@@ -68,15 +79,22 @@ def run_dex(args):
         cmd.append("--quiet")
     if args.once:
         cmd.append("--once")
-    if args.config:
-        # most runners read from configs/dex_mev.example.yaml by default;
-        # expose a standard env to point at another file.
-        os.environ["DEX_MEV_CONFIG"] = args.config
-    if args.live:
-        os.environ["DEX_LIVE_MODE"] = "true"  # your executor can check this
-    # Note: --paper flag is accepted but doesn't need special handling (paper is default)
 
-    print(f"▶ DEX runner: {' '.join(cmd)}")
+    # Default to BSC config for paper mode (best for finding opportunities)
+    # Default to Base config for live mode (safer, lower gas)
+    if args.config:
+        cmd.extend(["--config", args.config])
+    elif not args.live:
+        # Paper mode: use BSC (most opportunities)
+        cmd.extend(["--config", "configs/dex_bsc_dynamic.yaml"])
+        logger.info("💡 Using BSC config (best for finding opportunities)")
+    else:
+        # Live mode: use Base (safer, cheaper gas)
+        cmd.extend(["--config", "configs/dex_base_dynamic.yaml"])
+        logger.info("💡 Using Base config (low gas, safer for live trading)")
+        os.environ["DEX_LIVE_MODE"] = "true"
+
+    logger.info(f"▶ DEX runner: {' '.join(cmd)}")
     return run(cmd)
 
 
@@ -103,9 +121,9 @@ def run_cex(args):
         mode = "paper" if args.paper else "live"
 
         if mode == "live":
-            print("\n" + "⚠️ " * 20)
-            print("  LIVE TRADING MODE - REAL MONEY AT RISK!")
-            print("⚠️ " * 20 + "\n")
+            logger.warning("\n" + "⚠️ " * 20)
+            logger.warning("  LIVE TRADING MODE - REAL MONEY AT RISK!")
+            logger.warning("⚠️ " * 20 + "\n")
 
             # Check API keys
             kraken_key = os.getenv("KRAKEN_API_KEY")
@@ -113,39 +131,39 @@ def run_cex(args):
             coinbase_key = os.getenv("COINBASE_API_KEY")
 
             if not any([kraken_key, binance_key, coinbase_key]):
-                print("❌ No API keys found!")
-                print("   Please set up your API keys in .env file first.")
+                logger.error("❌ No API keys found!")
+                logger.error("   Please set up your API keys in .env file first.")
                 return 1
 
             confirmation = input(
                 "⚠️  Type 'YES' in CAPS to proceed with LIVE trading: "
             )
             if confirmation != "YES":
-                print("✅ Trading cancelled for safety")
+                logger.info("✅ Trading cancelled for safety")
                 return 0
 
         mode_icon = "📝" if mode == "paper" else "💰"
-        print(f"\n{mode_icon} Starting {mode.upper()} trading mode...\n")
+        logger.info(f"\n{mode_icon} Starting {mode.upper()} trading mode...\n")
 
         # Run the trading session
         async def run_session():
             exchanges_to_try = ["binanceus", "kraken", "kucoin", "coinbase"]
             for exchange_name in exchanges_to_try:
-                print(f"🔄 Connecting to {exchange_name.upper()}...")
+                logger.info(f"🔄 Connecting to {exchange_name.upper()}...")
                 try:
                     trader = RealTriangularArbitrage(exchange_name, mode)
                     await trader.run_trading_session()
                     break
                 except Exception as e:
-                    print(f"❌ {exchange_name.upper()} connection failed: {e}")
-                    print("   Trying next exchange...\n")
+                    logger.error(f"❌ {exchange_name.upper()} connection failed: {e}")
+                    logger.info("   Trying next exchange...\n")
                     continue
 
         try:
             asyncio.run(run_session())
         except KeyboardInterrupt:
-            print("\n\n✋ Stopped by user")
-            print("📊 Session ended gracefully")
+            logger.info("\n\n✋ Stopped by user")
+            logger.info("📊 Session ended gracefully")
         return 0
 
     except ImportError:
@@ -158,12 +176,10 @@ def run_cex(args):
 
         for cmd in candidates:
             if file_exists(cmd[1]):
-                print(f"▶ CEX runner: {' '.join(cmd)}")
+                logger.info(f"▶ CEX runner: {' '.join(cmd)}")
                 return run(cmd)
 
-        print(
-            "❌ Could not find a CEX entrypoint (tried run.py/main.py).", file=sys.stderr
-        )
+        logger.error("❌ Could not find a CEX entrypoint (tried run.py/main.py).")
         return 1
 
 
@@ -199,15 +215,15 @@ def build_parser():
 
 def interactive_menu():
     """Show interactive menu for mode selection."""
-    print("\n" + "=" * 70)
-    print("🤖  ARBITRAGE TRADING BOT")
-    print("=" * 70)
-    print("\nSelect Trading Mode:\n")
-    print("  1) 📝 CEX Paper Trading  (practice with simulated money)")
-    print("  2) 💰 CEX Live Trading   (real money - requires API keys)")
-    print("  3) 📝 DEX Paper Trading  (practice with DeFi arbitrage)")
-    print("  4) 💰 DEX Live Trading   (real money on blockchain)")
-    print("\n" + "-" * 70)
+    logger.info("\n" + "=" * 70)
+    logger.info("🤖  ARBITRAGE TRADING BOT")
+    logger.info("=" * 70)
+    logger.info("\nSelect Trading Mode:\n")
+    logger.info("  1) 📝 CEX Paper Trading  (practice with simulated money)")
+    logger.info("  2) 💰 CEX Live Trading   (real money - requires API keys)")
+    logger.info("  3) 📝 DEX Paper Trading  (BSC - best for finding opportunities)")
+    logger.info("  4) 💰 DEX Live Trading   (Base - low gas, real blockchain trades)")
+    logger.info("\n" + "-" * 70)
     choice = input("Choose [1-4]: ").strip()
     if choice == "1":
         return run_cex(argparse.Namespace(paper=True, live=False))
@@ -225,7 +241,7 @@ def interactive_menu():
                 quiet=False, once=False, config=None, paper=False, live=True
             )
         )
-    print("Unknown choice.")
+    logger.warning("Unknown choice.")
     return 1
 
 

@@ -199,7 +199,10 @@ function DexMevDashboard() {
     try {
       const response = await fetch('/api/dex/control', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': process.env.REACT_APP_WEB_API_KEY || ''
+        },
         body: JSON.stringify({
           action: 'start',
           mode: config.mode,
@@ -233,7 +236,10 @@ function DexMevDashboard() {
     try {
       const response = await fetch('/api/dex/control', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': process.env.REACT_APP_WEB_API_KEY || ''
+        },
         body: JSON.stringify({ action: 'stop' })
       });
 
