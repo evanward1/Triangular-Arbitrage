@@ -21,6 +21,8 @@ from triangular_arbitrage.validation.breakeven import BreakevenGuard, LegInfo
 
 from .adapters.v2 import fetch_pool, fetch_pool_async, swap_out
 from .config import DexConfig
+from .pool_quality import filter_low_quality_pools
+from .slippage import calculate_two_leg_slippage
 from .types import ArbRow, DexPool
 
 
@@ -82,7 +84,11 @@ class DexRunner:
     """
 
     def __init__(
-        self, config: DexConfig, quiet: bool = False, use_dynamic_pools: bool = None
+        self,
+        config: DexConfig,
+        quiet: bool = False,
+        use_dynamic_pools: bool = None,
+        starting_capital_usd: float = 1000.0,
     ):
         """
         Initialize runner with config.
@@ -91,6 +97,7 @@ class DexRunner:
             config: Validated DexConfig instance
             quiet: If True, only show opportunities + batch summaries (less noise)
             use_dynamic_pools: If True/False, override config. If None, use config value.
+            starting_capital_usd: Starting account balance in USD (default: $1000)
         """
         self.config = config
         self.quiet = quiet
@@ -114,6 +121,10 @@ class DexRunner:
         self.addr_of: Dict[str, str] = {}
         self.decimals_of: Dict[str, int] = {}
         self.symbol_of: Dict[str, str] = {}
+
+        # Account balance tracking (paper trading)
+        self.starting_capital_usd = starting_capital_usd
+        self.total_paper_pnl_usd = 0.0  # Cumulative P&L from all scans
 
         # Scan stats for EMA tracking
         self.scan_count = 0
@@ -142,15 +153,32 @@ class DexRunner:
         Raises:
             Exception: If all RPC connections fail
         """
-        # List of fallback RPCs for Ethereum mainnet (prioritized by reliability)
-        fallback_rpcs = [
-            self.config.rpc_url,
-            "https://eth.drpc.org",  # Fast and reliable
-            "https://ethereum.publicnode.com",  # Reliable
-            "https://1rpc.io/eth",  # Reliable but slower
-            "https://rpc.ankr.com/eth",  # Sometimes unreliable
-            "https://eth.llamarpc.com",  # Sometimes unreliable
-        ]
+        # Detect chain from RPC URL and use appropriate fallbacks
+        rpc_url = self.config.rpc_url
+
+        # BSC fallback RPCs (prioritized by reliability)
+        if "bsc" in rpc_url.lower() or "binance" in rpc_url.lower():
+            fallback_rpcs = [
+                rpc_url,
+                "https://bsc-dataseed1.binance.org",
+                "https://bsc-dataseed2.binance.org",
+                "https://bsc-dataseed3.binance.org",
+                "https://bsc-dataseed4.binance.org",
+                "https://bsc.rpc.blxrbdn.com",  # bloXroute - fast & reliable
+                "https://bsc.publicnode.com",  # publicnode - reliable
+                "https://rpc.ankr.com/bsc",  # Ankr - reliable
+                "https://binance.nodereal.io",  # NodeReal - reliable
+            ]
+        else:
+            # Ethereum mainnet fallback RPCs (prioritized by reliability)
+            fallback_rpcs = [
+                rpc_url,
+                "https://eth.drpc.org",  # Fast and reliable
+                "https://ethereum.publicnode.com",  # Reliable
+                "https://1rpc.io/eth",  # Reliable but slower
+                "https://rpc.ankr.com/eth",  # Sometimes unreliable
+                "https://eth.llamarpc.com",  # Sometimes unreliable
+            ]
 
         # Debug: Log the configured RPC URL
         logger.debug(
@@ -353,6 +381,21 @@ class DexRunner:
         # Filter to keep only pairs that exist on multiple DEXes
         self._filter_cross_dex_pairs()
 
+        # Apply pool quality filtering
+        if (
+            hasattr(self.config, "enable_pool_quality_filter")
+            and self.config.enable_pool_quality_filter
+        ):
+            min_quality_score = getattr(self.config, "min_pool_quality_score", 50.0)
+            logger.info(
+                f"Applying pool quality filter (min_score={min_quality_score})..."
+            )
+            self.pools = filter_low_quality_pools(
+                self.pools,
+                min_score=min_quality_score,
+                usd_price_estimate=Decimal("1.0"),  # Assume stablecoin pairs
+            )
+
         # Debug: log pool pairs for troubleshooting
         if logger.level <= logging.DEBUG:
             logger.debug("Discovered pool details:")
@@ -365,17 +408,22 @@ class DexRunner:
 
         This ensures we only scan pools that have arbitrage potential
         (same pair available on multiple venues).
+
+        CRITICAL: Uses token ADDRESSES not symbols to avoid matching different
+        tokens with the same symbol (e.g., multiple BUSD contracts on BSC).
         """
         from collections import defaultdict
 
-        # Group pools by normalized pair (sort tokens alphabetically)
+        # Group pools by normalized pair (sort token ADDRESSES alphabetically)
         pair_to_dexes: Dict[Tuple[str, str], List[str]] = defaultdict(list)
         pair_to_pools: Dict[Tuple[str, str], List[DexPool]] = defaultdict(list)
 
         for pool in self.pools:
-            # Normalize pair by sorting tokens alphabetically
+            # CRITICAL FIX: Use token addresses, not symbols, to avoid symbol collisions
+            # Multiple tokens can have the same symbol (e.g., different BUSD contracts)
+            # Normalize pair by sorting token addresses alphabetically
             # This handles both WBNB/USDT and USDT/WBNB as the same pair
-            tokens = tuple(sorted([pool.base_symbol, pool.quote_symbol]))
+            tokens = tuple(sorted([pool.token0.lower(), pool.token1.lower()]))
 
             pair_to_dexes[tokens].append(pool.dex)
             pair_to_pools[tokens].append(pool)
@@ -575,8 +623,9 @@ class DexRunner:
                     pool.r1 = r1
             return
 
-        # Create semaphore to limit concurrent requests (max 10 at once for 1000 pools)
-        semaphore = asyncio.Semaphore(10)
+        # Create semaphore to limit concurrent requests
+        # Reduced from 10 to 5 to avoid overwhelming public RPCs
+        semaphore = asyncio.Semaphore(5)
 
         async def fetch_one_pool(
             pool: DexPool,
@@ -584,8 +633,9 @@ class DexRunner:
             """Fetch reserves for a single pool with rate limiting."""
             async with semaphore:
                 try:
-                    # Add small delay between requests to avoid bursts
-                    await asyncio.sleep(0.1)
+                    # Add delay between requests to avoid rate limiting
+                    # Increased from 0.1s to 0.2s for better compliance with public RPC limits
+                    await asyncio.sleep(0.2)
                     _, _, r0, r1 = await fetch_pool_async(
                         self.web3, pool.pair_addr, max_retries=5
                     )
@@ -593,7 +643,24 @@ class DexRunner:
                 except Exception as e:
                     # Silently skip failed pools (too noisy)
                     error_msg = str(e)
-                    if "limit exceeded" not in error_msg.lower():
+                    # Check for various rate limit error messages
+                    if any(
+                        keyword in error_msg.lower()
+                        for keyword in [
+                            "limit exceeded",
+                            "rate limit",
+                            "forbidden",
+                            "429",
+                            "403",
+                        ]
+                    ):
+                        # Rate limit detected - log once and skip silently
+                        if not hasattr(self, "_rate_limit_warned"):
+                            logger.warning(
+                                "⚠ RPC rate limiting detected - some pools skipped"
+                            )
+                            self._rate_limit_warned = True
+                    else:
                         logger.warning(
                             f"Failed to refresh {pool.dex}/{pool.pair_name}: {e}"
                         )
@@ -819,11 +886,50 @@ class DexRunner:
             amount_in_leg2, reserve_in_leg2, reserve_out_leg2, poolB.fee
         )
 
+        # Calculate dynamic slippage based on pool depth and trade size
+        # If dynamic slippage is enabled, use calculated values; otherwise use config
+        use_dynamic_slippage = getattr(self.config, "use_dynamic_slippage", False)
+
+        if use_dynamic_slippage:
+            # Calculate dynamic slippage for both legs
+            leg1_slip, leg2_slip, total_slip_pct = calculate_two_leg_slippage(
+                leg1_amount_in=amount_in_leg1,
+                leg1_reserve_in=reserve_in_leg1,
+                leg1_reserve_out=reserve_out_leg1,
+                leg1_fee=poolA.fee,
+                leg2_amount_in=amount_in_leg2,
+                leg2_reserve_in=reserve_in_leg2,
+                leg2_reserve_out=reserve_out_leg2,
+                leg2_fee=poolB.fee,
+                safety_multiplier=Decimal(
+                    str(getattr(self.config, "slippage_safety_multiplier", 1.5))
+                ),
+            )
+
+            # Use calculated slippage (as percentage)
+            slippage_decimal = total_slip_pct / Decimal("100")
+
+            # Store per-leg slippage percentages for passing to BreakevenGuard
+            leg1_slip_pct = float(leg1_slip * Decimal("100"))
+            leg2_slip_pct = float(leg2_slip * Decimal("100"))
+
+            # Log dynamic slippage calculation
+            logger.debug(
+                f"Dynamic slippage: {float(total_slip_pct):.4f}% "
+                f"(leg1: {leg1_slip_pct:.4f}%, leg2: {leg2_slip_pct:.4f}%) "
+                f"vs fixed: {float(self.config.slippage_decimal)*100:.2f}%"
+            )
+        else:
+            # Use fixed slippage from config (split evenly across legs)
+            slippage_decimal = self.config.slippage_decimal
+            leg1_slip_pct = float(self.config.slippage_pct) / 2.0
+            leg2_slip_pct = float(self.config.slippage_pct) / 2.0
+
         # Apply slippage haircut to final proceeds
-        slippage_factor = Decimal(1) - self.config.slippage_decimal
+        slippage_factor = Decimal(1) - slippage_decimal
         final_quote = final_quote_before_slip * slippage_factor
 
-        # Calculate percentages
+        # Calculate percentages (using boosted amounts if simulation mode is enabled)
         gross_pct_raw = (final_quote_before_slip / initial_quote - 1) * 100
 
         # Sanity check: Cap profit at reasonable bounds
@@ -889,6 +995,10 @@ class DexRunner:
         )
 
         # Build LegInfo for BreakevenGuard validation
+        # CRITICAL: gross_pct already includes AMM fees (from swap_out)
+        # Do NOT pass fees to BreakevenGuard or they will be subtracted twice!
+        # Use configured slippage for safety margin only.
+
         # Leg 1: Buy base with quote on poolA
         # Notional in USD
         leg1_notional = float(self.config.max_position_usd)
@@ -899,8 +1009,8 @@ class DexRunner:
             price_used=leg1_price,
             price_source="ask",
             vwap_levels=1,
-            slippage_pct=float(poolA.fee * 100),
-            fee_pct=float(poolA.fee * 100),
+            slippage_pct=leg1_slip_pct,  # Use calculated per-leg slippage
+            fee_pct=0.0,  # Fees already in gross - don't double count!
             notional_quote=leg1_notional,
             latency_ms=0,
         )
@@ -915,8 +1025,8 @@ class DexRunner:
             price_used=leg2_price,
             price_source="bid",
             vwap_levels=1,
-            slippage_pct=float(self.config.slippage_decimal * 100),
-            fee_pct=float(poolB.fee * 100),
+            slippage_pct=leg2_slip_pct,  # Use calculated per-leg slippage
+            fee_pct=0.0,  # Fees already in gross - don't double count!
             notional_quote=leg2_notional,
             latency_ms=0,
         )
@@ -932,6 +1042,14 @@ class DexRunner:
         total_notional = float(self.config.max_position_usd)
 
         try:
+            # DIAGNOSTIC: Log inputs to BreakevenGuard
+            logger.debug(
+                f"BreakevenGuard inputs: gross={gross_pct:.4f}%, "
+                f"leg1(slip={leg1.slippage_pct:.4f}%, fee={leg1.fee_pct:.4f}%), "
+                f"leg2(slip={leg2.slippage_pct:.4f}%, fee={leg2.fee_pct:.4f}%), "
+                f"threshold={float(self.config.threshold_net_pct):.4f}%"
+            )
+
             be_line = self.breakeven_guard.compute(
                 legs=[leg1, leg2],
                 gross_pct=gross_pct,
@@ -940,6 +1058,43 @@ class DexRunner:
                 total_notional_quote=total_notional,
                 threshold_pct=float(self.config.threshold_net_pct),
             )
+
+            # DIAGNOSTIC: Log outputs from BreakevenGuard
+            logger.debug(
+                f"BreakevenGuard outputs: gross={be_line.gross_pct:.4f}%, "
+                f"fees={be_line.fees_pct:.4f}%, slip={be_line.slip_pct:.4f}%, "
+                f"gas={be_line.gas_pct:.4f}%, threshold={be_line.threshold_pct:.4f}%, "
+                f"net={be_line.net_pct:.4f}%"
+            )
+
+            # DIAGNOSTIC: Verify fees_pct is 0.0 (fees already in gross)
+            if be_line.fees_pct != 0.0:
+                logger.debug(
+                    f"⚠ ACCOUNTING BUG DETECTED: BreakevenGuard.fees_pct={be_line.fees_pct:.4f}% "
+                    f"but should be 0.0 (fees already baked into gross_pct from swap_out). "
+                    f"This causes ~{be_line.fees_pct:.2f}% double-counting!"
+                )
+
+            # DIAGNOSTIC: Verify displayed costs match BreakevenGuard costs
+            display_slip = self.config.slippage_pct
+            display_gas = (
+                self.config.gas_pct if self.config.gas_cost_usd_override else 0.0
+            )
+            display_threshold = self.config.threshold_net_pct
+            expected_net_from_display = (
+                gross_pct - display_slip - display_gas - display_threshold
+            )
+
+            if abs(expected_net_from_display - be_line.net_pct) > 0.01:
+                logger.debug(
+                    f"⚠ DISPLAY MISMATCH: Display shows net={expected_net_from_display:.4f}% "
+                    f"(gross {gross_pct:.4f} - slip {display_slip:.4f} - "
+                    f"gas {display_gas:.4f} - thresh {display_threshold:.4f}) "
+                    f"but BreakevenGuard computed net={be_line.net_pct:.4f}%. "
+                    f"Hidden cost: {expected_net_from_display - be_line.net_pct:.4f}% "
+                    f"(likely fees={be_line.fees_pct:.4f}%)"
+                )
+
             # Update net_pct from validated calculation
             net_pct = be_line.net_pct
         except (ValueError, AssertionError) as e:
@@ -977,16 +1132,21 @@ class DexRunner:
 
         print(f"\n{c.CYAN}{c.BOLD}{'═' * 80}{c.RESET}")
         print(
-            f"{c.CYAN}{c.BOLD}  DEX ARBITRAGE SCANNER {c.RESET}{c.CYAN}— Real-time Cross-DEX Opportunity Detection{c.RESET}"
+            f"{c.CYAN}{c.BOLD}  DEX ARBITRAGE SCANNER {c.RESET}{c.CYAN}— "
+            f"Real-time Cross-DEX Opportunity Detection{c.RESET}"
         )
         print(f"{c.CYAN}{'═' * 80}{c.RESET}\n")
 
         print(f"  {c.BOLD}Configuration:{c.RESET}")
+        mode_str = "Single Scan" if cfg.once else "Continuous"
         print(
-            f"    {c.DIM}Pools:{c.RESET} {c.GREEN}{len(self.pools)}{c.RESET} | {c.DIM}Scan Interval:{c.RESET} {c.GREEN}{cfg.poll_sec}s{c.RESET} | {c.DIM}Mode:{c.RESET} {c.GREEN}{'Single Scan' if cfg.once else 'Continuous'}{c.RESET}"
+            f"    {c.DIM}Pools:{c.RESET} {c.GREEN}{len(self.pools)}{c.RESET} | "
+            f"{c.DIM}Scan Interval:{c.RESET} {c.GREEN}{cfg.poll_sec}s{c.RESET} | "
+            f"{c.DIM}Mode:{c.RESET} {c.GREEN}{mode_str}{c.RESET}"
         )
         print(
-            f"    {c.DIM}Trade Size:{c.RESET} {c.GREEN}${cfg.max_position_usd}{c.RESET} | {c.DIM}Profit Threshold:{c.RESET} {c.GREEN}{cfg.threshold_net_pct:.2f}% NET{c.RESET}"
+            f"    {c.DIM}Trade Size:{c.RESET} {c.GREEN}${cfg.max_position_usd}{c.RESET} | "
+            f"{c.DIM}Profit Threshold:{c.RESET} {c.GREEN}{cfg.threshold_net_pct:.2f}% NET{c.RESET}"
         )
 
         gas_str = ""
@@ -994,9 +1154,133 @@ class DexRunner:
             gas_str = f" + {c.YELLOW}gas({cfg.gas_pct:.2f}%){c.RESET}"
 
         print(
-            f"    {c.DIM}Breakeven:{c.RESET} {c.YELLOW}{cfg.breakeven_pct:.2f}%{c.RESET} = {c.DIM}threshold({cfg.threshold_net_pct:.2f}%) + slippage({cfg.slippage_pct:.2f}%){gas_str}{c.RESET}"
+            f"    {c.DIM}Breakeven:{c.RESET} {c.YELLOW}{cfg.breakeven_pct:.2f}%{c.RESET} = "
+            f"{c.DIM}threshold({cfg.threshold_net_pct:.2f}%) + "
+            f"slippage({cfg.slippage_pct:.2f}%){gas_str}{c.RESET}"
         )
+
+        # Show paper trading account balance
+        print(f"\n  {c.BOLD}Account Balance (Paper Trading):{c.RESET}")
+        print(
+            f"    {c.DIM}Starting Capital:{c.RESET} {c.GREEN}${self.starting_capital_usd:,.2f}{c.RESET}"
+        )
+
+        # Print fee audit table (sample of 5 random pools to verify fees)
+        import random
+
+        sample_pools = random.sample(self.pools, min(5, len(self.pools)))
+        print(f"\n  {c.BOLD}Fee Audit (sample of {len(sample_pools)} pools):{c.RESET}")
+        print(
+            f"    {c.DIM}{'DEX':<18} {'Pair':<20} {'Fee (bps)':<12} {'Fee (%)':<10}{c.RESET}"
+        )
+        for pool in sample_pools:
+            fee_bps = pool.fee * Decimal("10000")
+            fee_pct = pool.fee * Decimal("100")
+            print(
+                f"    {pool.dex:<18} {pool.pair_name:<20} "
+                f"{float(fee_bps):>10.1f} {float(fee_pct):>10.3f}%"
+            )
+
         print(f"\n{c.CYAN}{'═' * 80}{c.RESET}\n")
+
+    def print_route_deep_dive(self, row: ArbRow) -> None:
+        """
+        Print detailed breakdown for a single route (diagnostic).
+
+        Shows reserves, fees, price impact, and all cost terms.
+        """
+        c = Colors
+        print(f"\n  {c.BOLD}{c.CYAN}Route Deep Dive:{c.RESET}")
+        print(f"    {c.WHITE}{row.cycle}{c.RESET}")
+
+        # Find the two pools used in this route
+        poolA = None
+        poolB = None
+        for pool in self.pools:
+            if pool.dex == row.dexA and row.pair.replace(
+                "/", ""
+            ) in pool.pair_name.replace("/", ""):
+                poolA = pool
+            elif pool.dex == row.dexB and row.pair.replace(
+                "/", ""
+            ) in pool.pair_name.replace("/", ""):
+                poolB = pool
+            if poolA and poolB:
+                break
+
+        if poolA and poolB:
+            print(f"\n    {c.DIM}Pool A ({poolA.dex}):{c.RESET}")
+            print(
+                f"      Reserves: {float(poolA.r0):,.0f} {poolA.base_symbol} / "
+                f"{float(poolA.r1):,.0f} {poolA.quote_symbol}"
+            )
+            print(
+                f"      Fee: {float(poolA.fee * 100):.3f}% ({float(poolA.fee * 10000):.1f} bps)"
+            )
+            print(
+                f"      Spot price: {float(poolA.r1 / poolA.r0):.6f} {poolA.quote_symbol}/{poolA.base_symbol}"
+            )
+
+            print(f"\n    {c.DIM}Pool B ({poolB.dex}):{c.RESET}")
+            print(
+                f"      Reserves: {float(poolB.r0):,.0f} {poolB.base_symbol} / "
+                f"{float(poolB.r1):,.0f} {poolB.quote_symbol}"
+            )
+            print(
+                f"      Fee: {float(poolB.fee * 100):.3f}% ({float(poolB.fee * 10000):.1f} bps)"
+            )
+            print(
+                f"      Spot price: {float(poolB.r1 / poolB.r0):.6f} {poolB.quote_symbol}/{poolB.base_symbol}"
+            )
+
+            print(f"\n    {c.DIM}Profit breakdown:{c.RESET}")
+            print(f"      Gross (after AMM fees): {row.gross_pct:+.4f}%")
+            print(f"      Safety slippage:        -{self.config.slippage_pct:.4f}%")
+            if self.config.gas_cost_usd_override:
+                print(f"      Gas cost:               -{self.config.gas_pct:.4f}%")
+            print(
+                f"      Min threshold:          -{self.config.threshold_net_pct:.4f}%"
+            )
+            print(f"      {c.BOLD}Net P&L:                {row.net_pct:+.4f}%{c.RESET}")
+        else:
+            print(f"    {c.DIM}(Could not find pools for detailed breakdown){c.RESET}")
+
+    def get_current_balance_usd(self) -> float:
+        """
+        Calculate current account balance (paper trading).
+
+        Returns:
+            Current balance = starting capital + total paper P&L
+        """
+        return self.starting_capital_usd + self.total_paper_pnl_usd
+
+    def print_balance_line(self) -> None:
+        """Print current balance as a compact status line."""
+        c = Colors
+
+        current_balance = self.get_current_balance_usd()
+        total_pnl = self.total_paper_pnl_usd
+        pnl_pct = (
+            (total_pnl / self.starting_capital_usd * 100)
+            if self.starting_capital_usd > 0
+            else 0.0
+        )
+
+        # Color based on profit/loss
+        balance_color = (
+            c.GREEN if total_pnl > 0 else (c.RED if total_pnl < 0 else c.WHITE)
+        )
+        pnl_symbol = "↑" if total_pnl > 0 else ("↓" if total_pnl < 0 else "→")
+
+        print(f"  {c.CYAN}{'─' * 72}{c.RESET}")
+        pnl_sign = "+" if total_pnl >= 0 else ""
+        print(
+            f"  {c.BOLD}Balance:{c.RESET} {balance_color}${current_balance:,.2f}{c.RESET} "
+            f"{c.DIM}(Started: ${self.starting_capital_usd:,.2f}){c.RESET} "
+            f"{c.BOLD}P&L:{c.RESET} {balance_color}{pnl_symbol} "
+            f"{pnl_sign}${total_pnl:.2f} ({pnl_pct:+.2f}%){c.RESET}"
+        )
+        print(f"  {c.CYAN}{'─' * 72}{c.RESET}")
 
     def print_results(self, rows: List[ArbRow], scan_num: int) -> None:
         """
@@ -1008,6 +1292,10 @@ class DexRunner:
         """
         # Check for opportunities (net >= threshold)
         opportunities = [r for r in rows if r.net_pct >= self.config.threshold_net_pct]
+
+        # On first scan, print a route deep dive for the best route
+        if scan_num == 1 and rows:
+            self.print_route_deep_dive(rows[0])
 
         # In quiet mode, batch scans and only show opportunities
         if self.quiet:
@@ -1061,6 +1349,7 @@ class DexRunner:
                 gas_impact = (
                     self.config.gas_pct if self.config.gas_cost_usd_override else 0.0
                 )
+                threshold_impact = self.config.threshold_net_pct
 
                 # Profit icon and color
                 is_profitable = row.net_pct >= self.config.threshold_net_pct
@@ -1075,13 +1364,17 @@ class DexRunner:
                 else:
                     cycle_str = " → ".join(cycle_parts)
 
-                # Show breakdown: Raw (after fees) − Slippage − Gas = Net
+                # Show breakdown: Raw (after AMM fees!) − Slippage − Gas − Threshold = Net
+                # CRITICAL: Raw already includes AMM swap fees, don't show as separate
                 print(
-                    f"  {profit_color}{profit_icon}{c.RESET} {c.BOLD}{i:2d}.{c.RESET} {c.WHITE}{cycle_str:28s}{c.RESET} "
-                    f"{c.DIM}Raw:{c.RESET} {row.gross_pct:+.2f}% {c.DIM}({fees_pct:.2f}% fees){c.RESET}  "
-                    f"{c.DIM}Slip:{c.RESET} {slippage_impact:.2f}%  "
-                    f"{c.DIM}Gas:{c.RESET} {gas_impact:.2f}%  "
-                    f"{c.BOLD}Net:{c.RESET} {net_color}{row.net_pct:+.2f}%{c.RESET}"
+                    f"  {profit_color}{profit_icon}{c.RESET} {c.BOLD}{i:2d}.{c.RESET} "
+                    f"{c.WHITE}{cycle_str:28s}{c.RESET} "
+                    f"{c.DIM}Raw:{c.RESET} {row.gross_pct:+.2f}% "
+                    f"{c.DIM}(after {fees_pct:.2f}% AMM fees){c.RESET} "
+                    f"{c.DIM}− Slip:{c.RESET} {slippage_impact:.2f}% "
+                    f"{c.DIM}− Gas:{c.RESET} {gas_impact:.2f}% "
+                    f"{c.DIM}− Min:{c.RESET} {threshold_impact:.2f}% "
+                    f"{c.DIM}={c.RESET} {c.BOLD}Net:{c.RESET} {net_color}{row.net_pct:+.2f}%{c.RESET}"
                 )
 
         # Show why line if no profitable opportunities
@@ -1106,9 +1399,8 @@ class DexRunner:
             gas_impact = (
                 self.config.gas_pct if self.config.gas_cost_usd_override else 0.0
             )
-            breakeven_gross = (
-                self.config.threshold_net_pct + slippage_impact + gas_impact
-            )
+            threshold_impact = self.config.threshold_net_pct
+            breakeven_gross = threshold_impact + slippage_impact + gas_impact
             gross_gap = breakeven_gross - best.gross_pct
 
             print(f"\n  {c.BLUE}{'─' * 72}{c.RESET}")
@@ -1118,12 +1410,14 @@ class DexRunner:
             print(
                 f"     {c.DIM}Best route would lose{c.RESET} {c.RED}{abs(best.net_pct):.2f}%{c.RESET} "
                 f"{c.DIM}(need{c.RESET} {c.YELLOW}{gross_gap:+.2f}%{c.RESET} "
-                f"{c.DIM}more to break even){c.RESET}"
+                f"{c.DIM}more raw spread to break even){c.RESET}"
             )
             breakdown_msg = (
                 f"     {c.DIM}Breakdown: Raw{c.RESET} {best.gross_pct:+.2f}% "
-                f"{c.DIM}(fees {fees_pct:.2f}%) − Slip {slippage_impact:.2f}% "
-                f"− Gas {gas_impact:.2f}% = Net{c.RESET} {c.RED}{best.net_pct:+.2f}%{c.RESET}"
+                f"{c.DIM}(after {fees_pct:.2f}% AMM fees) "
+                f"− Slip {slippage_impact:.2f}% "
+                f"− Gas {gas_impact:.2f}% "
+                f"− Min {threshold_impact:.2f}% = Net{c.RESET} {c.RED}{best.net_pct:+.2f}%{c.RESET}"
             )
             print(breakdown_msg)
 
@@ -1138,16 +1432,27 @@ class DexRunner:
                 f"  {c.DIM}Summary: Checked {len(rows)} routes, 0 profitable{c.RESET}"
             )
 
-        # EV stats
+        # EV stats and paper trading balance update
         ev_scan = (
             sum(self.pnl_history) / len(self.pnl_history) if self.pnl_history else 0.0
         )
+
+        # Update paper trading balance with best opportunity P&L (simulated execution)
+        if opportunities:
+            # In paper trading, assume we would execute the best opportunity
+            best_pnl = opportunities[0].pnl_usd
+            self.total_paper_pnl_usd += best_pnl
+
         if len(self.pnl_history) >= 10:
             ev_color = c.GREEN if ev_scan > 0 else c.RED
             print(
                 f"  {c.DIM}Expected Value:{c.RESET} {ev_color}${ev_scan:+.2f}/scan{c.RESET}"
             )
 
+        print()
+
+        # Show current account balance after each scan
+        self.print_balance_line()
         print()
 
     def _print_opportunity(self, row: ArbRow, scan_num: int) -> None:
@@ -1171,11 +1476,12 @@ class DexRunner:
 
         gas_str = ""
         if self.config.gas_cost_usd_override:
-            gas_str = f" | Gas: {self.config.gas_pct:.2f}%"
+            gas_str = f" − Gas: {self.config.gas_pct:.2f}%"
 
         logger.info(
-            f"  Raw: {row.gross_pct:+.2f}% (incl. fees {fees_pct:.2f}%) | "
-            f"Slip: {self.config.slippage_pct:.2f}%{gas_str} | Net: {row.net_pct:+.2f}%"
+            f"  Raw: {row.gross_pct:+.2f}% (after {fees_pct:.2f}% AMM fees) "
+            f"− Slip: {self.config.slippage_pct:.2f}%{gas_str} "
+            f"− Min: {self.config.threshold_net_pct:.2f}% = Net: {row.net_pct:+.2f}%"
         )
         logger.info(
             f"  Expected profit: ${abs(row.pnl_usd):.2f} on ${self.config.max_position_usd}"
@@ -1264,9 +1570,9 @@ class DexRunner:
         self.print_banner()
 
         scan_num = 0
-        POOL_REFRESH_INTERVAL = (
-            50  # Refresh pool list every 50 scans (~8 minutes at 10s intervals)
-        )
+        # Refresh pool list every 500 scans (~50 minutes at 6s intervals)
+        # Reduced frequency to avoid slow re-scans
+        POOL_REFRESH_INTERVAL = 500
 
         while True:
             scan_num += 1

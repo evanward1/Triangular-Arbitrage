@@ -16,6 +16,40 @@ from web3.exceptions import Web3Exception
 from ..abi import UNISWAP_V2_PAIR_ABI
 
 
+def try_read_swap_fee(web3: Web3, pair_addr: str, default_fee_bps: int = 30) -> int:
+    """
+    Try to read swapFee() from a V2 pair contract.
+
+    Some BSC V2 forks (PancakeSwap V2, Biswap, etc.) have dynamic fees
+    via a swapFee() function that returns basis points.
+
+    Standard Uniswap V2 does NOT have this function and will revert.
+
+    Args:
+        web3: Web3 instance
+        pair_addr: Pair contract address
+        default_fee_bps: Fallback fee if swapFee() doesn't exist (default: 30 = 0.3%)
+
+    Returns:
+        Fee in basis points (e.g., 30 for 0.30%, 25 for 0.25%, 10 for 0.10%)
+    """
+    try:
+        pair = web3.eth.contract(address=pair_addr, abi=UNISWAP_V2_PAIR_ABI)
+        swap_fee = pair.functions.swapFee().call()
+
+        # swapFee() returns uint32 in basis points (e.g., 30 = 0.30%)
+        # Sanity check: fee should be between 1 and 1000 bps (0.01% to 10%)
+        if 1 <= swap_fee <= 1000:
+            return int(swap_fee)
+        else:
+            # Invalid fee, use default
+            return default_fee_bps
+    except Exception:
+        # swapFee() doesn't exist or failed - use default
+        # This is expected for standard Uniswap V2 (always 0.30%)
+        return default_fee_bps
+
+
 def fetch_pool(
     web3: Web3, pair_addr: str, max_retries: int = 3
 ) -> Tuple[str, str, Decimal, Decimal]:
