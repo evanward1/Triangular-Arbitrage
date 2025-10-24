@@ -35,6 +35,15 @@ UNISWAP_V2_PAIR_ABI = [
         "stateMutability": "view",
         "type": "function",
     },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "swapFee",
+        "outputs": [{"name": "", "type": "uint32"}],
+        "payable": False,
+        "stateMutability": "view",
+        "type": "function",
+    },
 ]
 
 # Uniswap V3 Quoter ABI (minimal subset for getting quotes)

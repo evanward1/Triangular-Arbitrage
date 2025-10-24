@@ -1225,10 +1225,14 @@ class OrderManager:
         # Order status caching
         self.order_cache = {}
         self.cache_ttl = self.monitor_config.get("cache_ttl_ms", 500) / 1000.0
+        self._cache_lock = asyncio.Lock()  # Protect order_cache from race conditions
 
         # Track API call metrics for rate limiting
         self.api_call_timestamps = deque(maxlen=100)
         self.last_api_call = 0
+        self._timestamps_lock = (
+            asyncio.Lock()
+        )  # Protect api_call_timestamps from race conditions
 
     async def place_order(
         self, market_symbol: str, side: str, amount: float, order_type: str = None
@@ -1309,7 +1313,7 @@ class OrderManager:
 
             # Check cache first
             cache_key = f"{order_info.id}_{order_info.market_symbol}"
-            cached_data = self._get_cached_order_status(cache_key)
+            cached_data = await self._get_cached_order_status(cache_key)
 
             if cached_data is None:
                 # Rate limit protection
@@ -1323,10 +1327,10 @@ class OrderManager:
                     api_calls_made += 1
 
                     # Cache the result
-                    self._cache_order_status(cache_key, order)
+                    await self._cache_order_status(cache_key, order)
 
                     # Track API call for rate limiting
-                    self._track_api_call()
+                    await self._track_api_call()
 
                 except Exception as e:
                     logger.error(f"Error monitoring order {order_info.id}: {e}")
@@ -1418,52 +1422,56 @@ class OrderManager:
         )
         return order_info
 
-    def _get_cached_order_status(self, cache_key: str) -> Optional[Dict]:
-        """Get cached order status if still valid"""
-        if cache_key in self.order_cache:
-            cached_time, cached_data = self.order_cache[cache_key]
-            if time.time() - cached_time < self.cache_ttl:
-                return cached_data
-            else:
-                # Cache expired, remove it
-                del self.order_cache[cache_key]
-        return None
+    async def _get_cached_order_status(self, cache_key: str) -> Optional[Dict]:
+        """Get cached order status if still valid (thread-safe)"""
+        async with self._cache_lock:
+            if cache_key in self.order_cache:
+                cached_time, cached_data = self.order_cache[cache_key]
+                if time.time() - cached_time < self.cache_ttl:
+                    return cached_data
+                else:
+                    # Cache expired, remove it
+                    del self.order_cache[cache_key]
+            return None
 
-    def _cache_order_status(self, cache_key: str, order_data: Dict):
-        """Cache order status with timestamp"""
-        self.order_cache[cache_key] = (time.time(), order_data)
+    async def _cache_order_status(self, cache_key: str, order_data: Dict):
+        """Cache order status with timestamp (thread-safe)"""
+        async with self._cache_lock:
+            self.order_cache[cache_key] = (time.time(), order_data)
 
-        # Clean up old cache entries if cache is getting large
-        if len(self.order_cache) > 100:
-            current_time = time.time()
-            expired_keys = [
-                k
-                for k, (t, _) in self.order_cache.items()
-                if current_time - t > self.cache_ttl
-            ]
-            for k in expired_keys:
-                del self.order_cache[k]
+            # Clean up old cache entries if cache is getting large
+            if len(self.order_cache) > 100:
+                current_time = time.time()
+                expired_keys = [
+                    k
+                    for k, (t, _) in self.order_cache.items()
+                    if current_time - t > self.cache_ttl
+                ]
+                for k in expired_keys:
+                    del self.order_cache[k]
 
-    def _track_api_call(self):
-        """Track API call timestamp for rate limiting"""
+    async def _track_api_call(self):
+        """Track API call timestamp for rate limiting (thread-safe)"""
         current_time = time.time()
-        self.api_call_timestamps.append(current_time)
-        self.last_api_call = current_time
+        async with self._timestamps_lock:
+            self.api_call_timestamps.append(current_time)
+            self.last_api_call = current_time
 
     async def _enforce_rate_limit(self):
-        """Enforce rate limiting to avoid hitting exchange limits"""
+        """Enforce rate limiting to avoid hitting exchange limits (thread-safe)"""
         current_time = time.time()
 
-        # Ensure minimum interval between requests
-        time_since_last = current_time - self.last_api_call
-        if time_since_last < self.min_request_interval:
-            await asyncio.sleep(self.min_request_interval - time_since_last)
+        async with self._timestamps_lock:
+            # Ensure minimum interval between requests
+            time_since_last = current_time - self.last_api_call
+            if time_since_last < self.min_request_interval:
+                await asyncio.sleep(self.min_request_interval - time_since_last)
 
-        # Check rate limit over sliding window
-        if len(self.api_call_timestamps) >= 10:
-            # Calculate request rate over last 10 requests
-            oldest_timestamp = self.api_call_timestamps[-10]
-            time_window = current_time - oldest_timestamp
+            # Check rate limit over sliding window
+            if len(self.api_call_timestamps) >= 10:
+                # Calculate request rate over last 10 requests
+                oldest_timestamp = self.api_call_timestamps[-10]
+                time_window = current_time - oldest_timestamp
 
             if time_window > 0:
                 request_rate = 10 / time_window

@@ -1,4 +1,5 @@
 import React from 'react';
+import PropTypes from 'prop-types';
 import './OpportunitiesPanel.css';
 
 function OpportunitiesPanel({ opportunities }) {
@@ -47,5 +48,16 @@ function OpportunitiesPanel({ opportunities }) {
     </div>
   );
 }
+
+OpportunitiesPanel.propTypes = {
+  opportunities: PropTypes.arrayOf(
+    PropTypes.shape({
+      cycle: PropTypes.arrayOf(PropTypes.string).isRequired,
+      profit_pct: PropTypes.number.isRequired,
+      expected_profit_usd: PropTypes.number.isRequired,
+      timestamp: PropTypes.number.isRequired,
+    })
+  ).isRequired,
+};
 
 export default OpportunitiesPanel;

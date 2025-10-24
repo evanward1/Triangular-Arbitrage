@@ -229,7 +229,8 @@ class PoolFactoryScanner:
                             flush=True,
                         )
                         logger.debug(
-                            f"{dex_name} progress: {i + 1}/{scan_limit} ({pct:.1f}%) - {len(pools)} pools qualify so far"
+                            f"{dex_name} progress: {i + 1}/{scan_limit} ({pct:.1f}%) - "
+                            f"{len(pools)} pools qualify so far"
                         )
 
                     # Small delay every 10 calls to avoid rate limiting (increased to 0.2s)
@@ -316,6 +317,9 @@ class PoolFactoryScanner:
             if reserve0 == 0 or reserve1 == 0:
                 return None
 
+            # Try to read actual fee from contract (some forks like PancakeSwap have swapFee())
+            actual_fee_bps = self._try_read_swap_fee(pair_address, fee_bps)
+
             # Estimate liquidity in USD
             liquidity_usd = self._estimate_liquidity_usd(
                 reserve0, reserve1, token0_info, token1_info
@@ -328,7 +332,7 @@ class PoolFactoryScanner:
             return {
                 "address": pair_address,
                 "dex_name": dex_name,
-                "fee_bps": fee_bps,
+                "fee_bps": actual_fee_bps,
                 "token0": token0_addr,
                 "token1": token1_addr,
                 "symbol0": token0_info["symbol"],
@@ -343,6 +347,51 @@ class PoolFactoryScanner:
         except Exception as e:
             logger.debug(f"Error scanning pool {pair_address}: {e}")
             return None
+
+    def _try_read_swap_fee(self, pair_address: str, default_fee_bps: int) -> int:
+        """
+        Try to read swapFee() from a V2 pair contract.
+
+        Some BSC V2 forks (PancakeSwap V2, Biswap, etc.) have dynamic fees
+        via a swapFee() function that returns basis points.
+
+        Standard Uniswap V2 does NOT have this function and will revert.
+
+        Args:
+            pair_address: Pair contract address
+            default_fee_bps: Fallback fee if swapFee() doesn't exist
+
+        Returns:
+            Fee in basis points (e.g., 30 for 0.30%, 25 for 0.25%, 10 for 0.10%)
+        """
+        try:
+            # Extended ABI with swapFee() function
+            pair_abi_with_fee = self.PAIR_ABI + [
+                {
+                    "constant": True,
+                    "inputs": [],
+                    "name": "swapFee",
+                    "outputs": [{"name": "", "type": "uint32"}],
+                    "type": "function",
+                }
+            ]
+
+            pair = self.w3.eth.contract(
+                address=Web3.to_checksum_address(pair_address), abi=pair_abi_with_fee
+            )
+            swap_fee = pair.functions.swapFee().call()
+
+            # swapFee() returns uint32 in basis points (e.g., 30 = 0.30%)
+            # Sanity check: fee should be between 1 and 1000 bps (0.01% to 10%)
+            if 1 <= swap_fee <= 1000:
+                return int(swap_fee)
+            else:
+                # Invalid fee, use default
+                return default_fee_bps
+        except Exception:
+            # swapFee() doesn't exist or failed - use default
+            # This is expected for standard Uniswap V2 (always 0.30%)
+            return default_fee_bps
 
     def _get_token_info(self, token_address: str) -> Optional[Dict]:
         """

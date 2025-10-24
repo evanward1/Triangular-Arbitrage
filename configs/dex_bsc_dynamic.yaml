@@ -1,55 +1,85 @@
 # DEX Paper Trading Config - BSC (Best for Finding Inefficient Routes)
 # BSC has many copycat tokens, shallow liquidity, and frequent mispricings
 
-# BSC mainnet RPC (free, public)
+# BSC mainnet RPC with fallback support
+# Primary RPC will be tried first, then fallbacks in order
 rpc_url: "https://bsc-dataseed.binance.org"
 
-poll_sec: 3  # Scan every 3 seconds - leverage 5s cache for speed
+# Alternative BSC RPCs (automatically used as fallbacks in dex/runner.py)
+# If primary fails, runner will try these in order:
+# - https://bsc-dataseed1.binance.org
+# - https://bsc-dataseed2.binance.org
+# - https://bsc-dataseed3.binance.org
+# - https://bsc-dataseed4.binance.org
+# - https://bsc.rpc.blxrbdn.com (bloXroute - fast & reliable)
+# - https://bsc.publicnode.com (publicnode - reliable)
+# - https://rpc.ankr.com/bsc (Ankr - reliable)
+# - https://binance.nodereal.io (NodeReal - reliable)
+
+poll_sec: 6  # Scan every 6 seconds (increased from 2s - more realistic for RPC rate limits)
 once: false
 
 # Trading parameters
-usd_token: "USDT"  # USDT is more common on BSC than USDC
+usd_token: "USDT"  # USDT is more common on BSC than USDT
 max_position_usd: 500  # Smaller size due to lower liquidity
-slippage_bps: 20  # Higher slippage tolerance for thin pools
-threshold_net_pct: 0.0  # Show all opportunities
+slippage_bps: 5  # 0.05% slippage estimate
+threshold_net_pct: 0.1  # Require at least 0.1% net profit to execute
+
+# Dynamic slippage calculation
+use_dynamic_slippage: true  # Calculate slippage based on pool depth
+slippage_safety_multiplier: 1.5  # Safety buffer multiplier
+
+# Pool quality filtering (NEW - filters out scam/low-quality pools)
+enable_pool_quality_filter: true  # Enable intelligent pool filtering
+min_pool_quality_score: 55.0  # Minimum quality score (0-100, higher = better)
 
 # Gas cost (BSC uses BNB for gas, very cheap)
 gas_price_gwei: 3.0  # ~3 gwei on BSC
 gas_limit: 200000
-gas_cost_usd_override: 0.15  # ~$0.15 per trade (BNB at ~$500)
+gas_cost_usd_override: 0.5  # Estimated gas cost per trade in USD
 
-# Tokens for BSC
+# Tokens for BSC - CANONICAL ADDRESSES ONLY
+# CRITICAL: Only list canonical tokens to avoid symbol collision issues
+# Do NOT add lookalike tokens or multiple variants of the same asset
 tokens:
   USDT:
-    address: "0x55d398326f99059fF775485246999027B3197955"  # BSC USDT
+    address: "0x55d398326f99059fF775485246999027B3197955"  # BSC USDT (Binance-Peg)
     decimals: 18
   WBNB:
     address: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"  # Wrapped BNB
     decimals: 18
   BUSD:
-    address: "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"  # Binance USD
+    address: "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"  # Binance-Peg BUSD (CANONICAL)
     decimals: 18
   USDC:
-    address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"  # BSC USDC
+    address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"  # BSC-USD (Binance-Peg)
+    decimals: 18
+  CAKE:
+    address: "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82"  # PancakeSwap Token
+    decimals: 18
+  DAI:
+    address: "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3"  # DAI Token (Binance-Peg)
     decimals: 18
 
-# Dynamic pool discovery - AGGRESSIVE discovery for maximum opportunities
+# Dynamic pool discovery - OPTIMIZED for quality over quantity
 dynamic_pools:
   enabled: true
   use_smart_discovery: true  # Use smart discovery (prioritizes cross-DEX pairs)
-  min_liquidity_usd: 3000    # Target thin pools with wide spreads (was 5000)
-  max_pools_per_dex: 350     # Discover MANY pools per DEX (was 100)
-  max_scan_pools: 2000       # DEEP scan - find hidden opportunities (was 1000)
+  min_liquidity_usd: 50000   # RAISED from 3k to 50k - filter out thin pools
+  max_pools_per_dex: 200     # Reduced from 350 - focus on quality pools
+  max_scan_pools: 500        # Scan up to 500 pools per DEX to find opportunities
 
-  # Factory contracts on BSC
+  # Factory contracts on BSC with CORRECTED fees
+  # NOTE: Actual fees are read per-pool from chain via swapFee() when available
+  # These are fallback defaults for pools without swapFee() function
   factories:
     - name: "pancakeswap_v2"
       address: "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73"  # PancakeSwap V2 Factory
-      fee_bps: 25  # 0.25% fee
+      fee_bps: 25  # Most pairs are 0.25%, some are 0.30% (read from chain)
 
     - name: "biswap"
       address: "0x858E3312ed3A876947EA49d572A7C42DE08af7EE"  # Biswap Factory
-      fee_bps: 10  # 0.10% fee (very low!)
+      fee_bps: 10  # 0.10% fee (very competitive!)
 
     - name: "apeswap"
       address: "0x0841BD0B734E4F5853f0dD8d7Ea041c241fb0Da6"  # ApeSwap Factory

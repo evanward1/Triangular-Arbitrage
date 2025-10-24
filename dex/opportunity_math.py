@@ -11,11 +11,14 @@ Conversion policy:
 - No inline *100 or /10000 - use pct_to_bps() and bps_to_pct()
 """
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal, getcontext
 
 # Set high precision for all decimal operations
 getcontext().prec = 50
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -244,7 +247,7 @@ def validate_example_snapshot():
         round(breakeven, 2) == expected_breakeven
     ), f"Breakeven should be {expected_breakeven}%, got {breakeven:.4f}%"
 
-    print(f"✓ Snapshot validation passed: {bd.format_log()}")
+    logger.info(f"✓ Snapshot validation passed: {bd.format_log()}")
 
 
 if __name__ == "__main__":

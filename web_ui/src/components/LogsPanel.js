@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import PropTypes from 'prop-types';
 import './LogsPanel.css';
 
 function LogsPanel({ logs }) {
@@ -34,5 +35,9 @@ function LogsPanel({ logs }) {
     </div>
   );
 }
+
+LogsPanel.propTypes = {
+  logs: PropTypes.arrayOf(PropTypes.string).isRequired,
+};
 
 export default LogsPanel;
