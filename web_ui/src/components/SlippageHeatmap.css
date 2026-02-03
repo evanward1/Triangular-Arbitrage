@@ -1,0 +1,147 @@
+/* ── Slippage Analysis – matches DexMevDashboard dark palette ── */
+
+.slippage-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Header */
+.slippage-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.slippage-header h2 {
+  color: #f0f6fc;
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.slippage-subtitle {
+  color: #7d8590;
+  font-size: 13px;
+  margin: 0;
+}
+
+/* Exchange filter */
+.slippage-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.slippage-filter label {
+  color: #7d8590;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.slippage-filter select {
+  padding: 8px 12px;
+  background-color: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #c9d1d9;
+  font-size: 14px;
+  cursor: pointer;
+  min-width: 140px;
+}
+
+.slippage-filter select:focus {
+  outline: none;
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 3px rgba(56, 139, 253, 0.15);
+}
+
+/* Chart panels – mirrors .dex-panel */
+.slippage-panel {
+  background: #161b22;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 0 0 1px #30363d;
+  border: 1px solid #30363d;
+}
+
+.slippage-panel h3 {
+  color: #f0f6fc;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #21262d;
+}
+
+/* Loading state */
+.slippage-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 80px 20px;
+  color: #7d8590;
+  font-size: 15px;
+}
+
+.slippage-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid #30363d;
+  border-top-color: #58a6ff;
+  border-radius: 50%;
+  animation: slippage-spin 0.7s linear infinite;
+}
+
+@keyframes slippage-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Error state */
+.slippage-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 60px 20px;
+  color: #f85149;
+  font-size: 14px;
+  text-align: center;
+}
+
+.slippage-retry {
+  padding: 8px 20px;
+  background-color: #da3633;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.slippage-retry:hover {
+  background-color: #f85149;
+}
+
+/* Empty state – mirrors .empty-state from DexMevDashboard */
+.slippage-empty {
+  padding: 60px 20px;
+  text-align: center;
+  color: #484f58;
+  font-size: 14px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .slippage-header {
+    flex-direction: column;
+  }
+}

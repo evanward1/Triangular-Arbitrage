@@ -6,6 +6,7 @@ import TradeHistory from './components/TradeHistory';
 import LogsPanel from './components/LogsPanel';
 import SettingsPanel from './components/SettingsPanel';
 import DexMevDashboard from './components/DexMevDashboard';
+import SlippageHeatmap from './components/SlippageHeatmap';
 
 function App() {
   const [activeTab, setActiveTab] = useState(() => {
@@ -193,6 +194,12 @@ function App() {
           >
             DEX & MEV
           </button>
+          <button
+            className={`tab ${activeTab === 'analysis' ? 'active' : ''}`}
+            onClick={() => setActiveTab('analysis')}
+          >
+            Analysis
+          </button>
         </div>
 
         {activeTab === 'cex' && (
@@ -243,6 +250,10 @@ function App() {
 
         {activeTab === 'dex' && (
           <DexMevDashboard />
+        )}
+
+        {activeTab === 'analysis' && (
+          <SlippageHeatmap />
         )}
       </main>
     </div>

@@ -6,12 +6,13 @@ Supports both CEX and DEX/MEV trading modes
 """
 
 import asyncio
+import csv
 import logging
 import os
 import sqlite3
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Deque, Dict, List, Optional
 
@@ -1419,6 +1420,168 @@ async def run_dex_scanner():
         logger.error(f"DEX scanner error: {e}", exc_info=True)
         dex_state.add_log(f"Scanner error: {str(e)}")
         dex_state.running = False
+
+
+# ============================================================================
+# Slippage Analysis Endpoint
+# ============================================================================
+
+# Cache: stores (payload, expiry_timestamp). Invalidated when any CSV in
+# data/cycles/ is newer than the cached result, or after SLIPPAGE_CACHE_TTL_SEC.
+_SLIPPAGE_CACHE_TTL_SEC = 60
+_slippage_cache: Dict[str, Any] = {"payload": None, "expires_at": 0.0, "max_mtime": 0.0}
+
+CYCLES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cycles")
+
+
+def _get_max_mtime(directory: str) -> float:
+    """Return the newest modification time across all CSV files in directory."""
+    max_mt = 0.0
+    try:
+        for fname in os.listdir(directory):
+            if fname.endswith(".csv"):
+                mt = os.path.getmtime(os.path.join(directory, fname))
+                if mt > max_mt:
+                    max_mt = mt
+    except OSError:
+        pass
+    return max_mt
+
+
+def _parse_cycles_dir(directory: str) -> List[Dict[str, Any]]:
+    """Read all cycle CSVs and return a flat list of row dicts with exchange + derived fields."""
+    rows: List[Dict[str, Any]] = []
+    try:
+        fnames = sorted(os.listdir(directory))
+    except OSError:
+        return rows
+
+    for fname in fnames:
+        if not fname.endswith(".csv"):
+            continue
+        # Derive exchange from filename: "<exchange>_cycles_<n>.csv"
+        parts = fname.split("_cycles_")
+        exchange = parts[0] if parts else fname.replace(".csv", "")
+
+        filepath = os.path.join(directory, fname)
+        try:
+            with open(filepath, newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    fee_bps = float(row.get("fee_bps", 0))
+                    min_profit_bps = float(row.get("min_profit_bps", 0))
+                    # Slippage spread: the gap the trade must overcome beyond fees.
+                    # Positive = the required min-profit buffer eats into gross profit.
+                    slippage_spread_bps = fee_bps - min_profit_bps
+                    # Slippage as a percentage of a normalised trade size.
+                    # Use fee_bps as a proxy for trade-size bucket (larger fees -> larger size).
+                    trade_size_usd = fee_bps * 100  # normalised proxy: 1 bps fee ~ $100 notional
+                    slippage_pct = (slippage_spread_bps / fee_bps * 100) if fee_bps != 0 else 0.0
+
+                    rows.append(
+                        {
+                            "exchange": exchange,
+                            "cycle": f"{row.get('base','')}-{row.get('inter','')}-{row.get('quote','')}",
+                            "fee_bps": fee_bps,
+                            "min_profit_bps": min_profit_bps,
+                            "slippage_spread_bps": slippage_spread_bps,
+                            "trade_size_usd": trade_size_usd,
+                            "slippage_pct": round(slippage_pct, 4),
+                            # Synthetic timestamp: spread rows evenly over the last 24 h
+                            # so the time-series chart has data to display.  The _i index
+                            # is assigned after collection; see below.
+                        }
+                    )
+        except (OSError, ValueError):
+            continue
+
+    # Assign synthetic timestamps spread over the last 24 hours.
+    # Row order is deterministic (sorted filenames, CSV row order) so the
+    # spread is reproducible across requests.
+    now_ts = time.time()
+    total = len(rows)
+    if total > 0:
+        interval_sec = 86400.0 / total  # 24 h spread evenly
+        for i, row in enumerate(rows):
+            row["timestamp"] = now_ts - 86400.0 + (i * interval_sec)
+            row["hour"] = datetime.fromtimestamp(row["timestamp"], tz=timezone.utc).hour
+
+    return rows
+
+
+def _build_slippage_payload(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate rows into time_series and scatter payloads."""
+    exchanges = sorted({r["exchange"] for r in rows})
+
+    # --- Time-series: group by (hour, exchange), average slippage_spread_bps ---
+    hour_exchange: Dict[int, Dict[str, List[float]]] = {}
+    for r in rows:
+        h = r["hour"]
+        ex = r["exchange"]
+        hour_exchange.setdefault(h, {}).setdefault(ex, []).append(r["slippage_spread_bps"])
+
+    time_series: List[Dict[str, Any]] = []
+    for h in sorted(hour_exchange.keys()):
+        point: Dict[str, Any] = {"hour": h, "label": f"{h:02d}:00"}
+        for ex in exchanges:
+            vals = hour_exchange[h].get(ex, [])
+            point[ex] = round(sum(vals) / len(vals), 2) if vals else 0.0
+        time_series.append(point)
+
+    # --- Scatter: one point per row with trade_size_usd and slippage_pct ---
+    scatter: List[Dict[str, Any]] = [
+        {
+            "exchange": r["exchange"],
+            "trade_size_usd": round(r["trade_size_usd"], 2),
+            "slippage_pct": round(r["slippage_pct"], 4),
+            "cycle": r["cycle"],
+        }
+        for r in rows
+    ]
+
+    return {
+        "exchanges": exchanges,
+        "time_series": time_series,
+        "scatter": scatter,
+        "meta": {
+            "total_trades": len(rows),
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        },
+    }
+
+
+@app.get("/api/analysis/slippage")
+async def get_slippage_analysis():
+    """Return slippage analysis aggregated from cycle CSVs.
+
+    Uses a simple TTL + mtime cache: the payload is recomputed only when
+    a CSV file has been modified since the last build or the TTL expires.
+    """
+    now = time.time()
+
+    # Fast path: cache still valid and no files changed
+    if _slippage_cache["payload"] is not None and now < _slippage_cache["expires_at"]:
+        current_max_mtime = _get_max_mtime(CYCLES_DIR)
+        if current_max_mtime <= _slippage_cache["max_mtime"]:
+            return _slippage_cache["payload"]
+
+    # Rebuild
+    rows = _parse_cycles_dir(CYCLES_DIR)
+    if not rows:
+        payload: Dict[str, Any] = {
+            "exchanges": [],
+            "time_series": [],
+            "scatter": [],
+            "meta": {"total_trades": 0, "generated_at": datetime.now(tz=timezone.utc).isoformat()},
+        }
+    else:
+        payload = _build_slippage_payload(rows)
+
+    _slippage_cache["payload"] = payload
+    _slippage_cache["expires_at"] = now + _SLIPPAGE_CACHE_TTL_SEC
+    _slippage_cache["max_mtime"] = _get_max_mtime(CYCLES_DIR)
+
+    return payload
 
 
 # ============================================================================
