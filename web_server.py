@@ -12,7 +12,7 @@ import os
 import sqlite3
 import time
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Deque, Dict, List, Optional
 
@@ -1465,35 +1465,34 @@ def _parse_cycles_dir(directory: str) -> List[Dict[str, Any]]:
 
         filepath = os.path.join(directory, fname)
         try:
-            with open(filepath, newline="", encoding="utf-8") as fh:
-                reader = csv.DictReader(fh)
-                for row in reader:
+            fh = open(filepath, newline="", encoding="utf-8")
+        except OSError:
+            continue
+
+        with fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                try:
                     fee_bps = float(row.get("fee_bps", 0))
                     min_profit_bps = float(row.get("min_profit_bps", 0))
-                    # Slippage spread: the gap the trade must overcome beyond fees.
-                    # Positive = the required min-profit buffer eats into gross profit.
-                    slippage_spread_bps = fee_bps - min_profit_bps
-                    # Slippage as a percentage of a normalised trade size.
-                    # Use fee_bps as a proxy for trade-size bucket (larger fees -> larger size).
-                    trade_size_usd = fee_bps * 100  # normalised proxy: 1 bps fee ~ $100 notional
-                    slippage_pct = (slippage_spread_bps / fee_bps * 100) if fee_bps != 0 else 0.0
+                except (ValueError, TypeError):
+                    continue
 
-                    rows.append(
-                        {
-                            "exchange": exchange,
-                            "cycle": f"{row.get('base','')}-{row.get('inter','')}-{row.get('quote','')}",
-                            "fee_bps": fee_bps,
-                            "min_profit_bps": min_profit_bps,
-                            "slippage_spread_bps": slippage_spread_bps,
-                            "trade_size_usd": trade_size_usd,
-                            "slippage_pct": round(slippage_pct, 4),
-                            # Synthetic timestamp: spread rows evenly over the last 24 h
-                            # so the time-series chart has data to display.  The _i index
-                            # is assigned after collection; see below.
-                        }
-                    )
-        except (OSError, ValueError):
-            continue
+                slippage_spread_bps = fee_bps - min_profit_bps
+                trade_size_usd = fee_bps * 100
+                slippage_pct = (slippage_spread_bps / fee_bps * 100) if fee_bps != 0 else 0.0
+
+                rows.append(
+                    {
+                        "exchange": exchange,
+                        "cycle": f"{row.get('base','')}-{row.get('inter','')}-{row.get('quote','')}",
+                        "fee_bps": fee_bps,
+                        "min_profit_bps": min_profit_bps,
+                        "slippage_spread_bps": slippage_spread_bps,
+                        "trade_size_usd": trade_size_usd,
+                        "slippage_pct": round(slippage_pct, 4),
+                    }
+                )
 
     # Assign synthetic timestamps spread over the last 24 hours.
     # Row order is deterministic (sorted filenames, CSV row order) so the
@@ -1550,22 +1549,8 @@ def _build_slippage_payload(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-@app.get("/api/analysis/slippage")
-async def get_slippage_analysis():
-    """Return slippage analysis aggregated from cycle CSVs.
-
-    Uses a simple TTL + mtime cache: the payload is recomputed only when
-    a CSV file has been modified since the last build or the TTL expires.
-    """
-    now = time.time()
-
-    # Fast path: cache still valid and no files changed
-    if _slippage_cache["payload"] is not None and now < _slippage_cache["expires_at"]:
-        current_max_mtime = _get_max_mtime(CYCLES_DIR)
-        if current_max_mtime <= _slippage_cache["max_mtime"]:
-            return _slippage_cache["payload"]
-
-    # Rebuild
+def _rebuild_slippage() -> Dict[str, Any]:
+    """Blocking rebuild — called via asyncio.to_thread so the event loop is free."""
     rows = _parse_cycles_dir(CYCLES_DIR)
     if not rows:
         payload: Dict[str, Any] = {
@@ -1577,11 +1562,30 @@ async def get_slippage_analysis():
     else:
         payload = _build_slippage_payload(rows)
 
+    now = time.time()
     _slippage_cache["payload"] = payload
     _slippage_cache["expires_at"] = now + _SLIPPAGE_CACHE_TTL_SEC
     _slippage_cache["max_mtime"] = _get_max_mtime(CYCLES_DIR)
-
     return payload
+
+
+@app.get("/api/analysis/slippage")
+async def get_slippage_analysis():
+    """Return slippage analysis aggregated from cycle CSVs.
+
+    Uses a simple TTL + mtime cache: the payload is recomputed only when
+    a CSV file has been modified since the last build or the TTL expires.
+    """
+    now = time.time()
+
+    # Fast path: TTL still valid (no I/O) → check mtime only if so
+    if _slippage_cache["payload"] is not None and now < _slippage_cache["expires_at"]:
+        current_max_mtime = await asyncio.to_thread(_get_max_mtime, CYCLES_DIR)
+        if current_max_mtime <= _slippage_cache["max_mtime"]:
+            return _slippage_cache["payload"]
+
+    # Slow path: rebuild off the event loop
+    return await asyncio.to_thread(_rebuild_slippage)
 
 
 # ============================================================================
