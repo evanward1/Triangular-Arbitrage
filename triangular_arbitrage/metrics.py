@@ -6,6 +6,7 @@ Exposes comprehensive trading metrics for monitoring and alerting.
 
 # asyncio removed - not used in current implementation
 import logging
+import math
 import time
 from collections import deque
 from typing import Dict, Any, Optional

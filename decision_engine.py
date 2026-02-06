@@ -8,6 +8,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from triangular_arbitrage.metrics import VolatilityMonitor
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +64,10 @@ class DecisionEngine:
                 - expected_maker_legs: Expected number of maker legs (optional)
                 - max_concurrent_trades: Maximum concurrent trades (optional)
                 - cooldown_seconds: Cooldown between trades (optional)
+                - volatility_window_size: Rolling window size for dynamic
+                  threshold (optional, enables dynamic mode)
+                - sigma_multiplier: Number of standard deviations above the
+                  moving average for the dynamic threshold (optional, default 1.5)
         """
         self.config = config or {}
 
@@ -100,8 +106,6 @@ class DecisionEngine:
 
         self._volatility_monitor = None
         if self.volatility_window_size is not None and self.sigma_multiplier is not None:
-            from triangular_arbitrage.metrics import VolatilityMonitor
-
             self._volatility_monitor = VolatilityMonitor(
                 window_size=self.volatility_window_size
             )
