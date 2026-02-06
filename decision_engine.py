@@ -86,6 +86,26 @@ class DecisionEngine:
             else None
         )
 
+        # Volatility-based dynamic thresholds (optional)
+        self.volatility_window_size = (
+            int(self.config.get("volatility_window_size"))
+            if self.config.get("volatility_window_size") is not None
+            else None
+        )
+        self.sigma_multiplier = (
+            float(self.config.get("sigma_multiplier"))
+            if self.config.get("sigma_multiplier") is not None
+            else None
+        )
+
+        self._volatility_monitor = None
+        if self.volatility_window_size is not None and self.sigma_multiplier is not None:
+            from triangular_arbitrage.metrics import VolatilityMonitor
+
+            self._volatility_monitor = VolatilityMonitor(
+                window_size=self.volatility_window_size
+            )
+
     def evaluate_opportunity(
         self,
         gross_pct: float,
@@ -135,10 +155,23 @@ class DecisionEngine:
         # Calculate net profit
         net_pct = gross_pct - fees_pct - slip_pct - gas_pct
 
+        # Feed observation to volatility monitor (always, regardless of decision)
+        if self._volatility_monitor is not None:
+            self._volatility_monitor.add_observation(net_pct)
+
+        # Determine effective threshold: dynamic if monitor is ready, static otherwise
+        effective_threshold = self.min_profit_threshold_pct
+        using_dynamic = False
+        if self._volatility_monitor is not None and self._volatility_monitor.is_ready:
+            dynamic = self._volatility_monitor.get_dynamic_threshold(
+                self.sigma_multiplier
+            )
+            if dynamic is not None:
+                effective_threshold = dynamic
+                using_dynamic = True
+
         # Calculate breakeven gross (minimum gross needed to meet threshold after costs)
-        breakeven_gross_pct = (
-            self.min_profit_threshold_pct + fees_pct + slip_pct + gas_pct
-        )
+        breakeven_gross_pct = effective_threshold + fees_pct + slip_pct + gas_pct
 
         # Build metrics dictionary
         metrics = {
@@ -151,13 +184,26 @@ class DecisionEngine:
             "size_usd": size_usd,
         }
 
+        # Add dynamic threshold diagnostics when volatility monitoring is active
+        if self._volatility_monitor is not None:
+            metrics["volatility_window_count"] = self._volatility_monitor.count
+            metrics["using_dynamic_threshold"] = 1.0 if using_dynamic else 0.0
+            metrics["effective_threshold_pct"] = effective_threshold
+            sigma = self._volatility_monitor.get_sigma()
+            if sigma is not None:
+                metrics["volatility_sigma"] = sigma
+            moving_avg = self._volatility_monitor.get_moving_average()
+            if moving_avg is not None:
+                metrics["volatility_moving_avg"] = moving_avg
+
         # Collect rejection reasons
         reasons = []
 
         # Check 1: Net profit must meet or exceed threshold
-        if net_pct < self.min_profit_threshold_pct:
+        if net_pct < effective_threshold:
             reasons.append(
-                f"threshold: net {net_pct:.4f}% < {self.min_profit_threshold_pct:.4f}%"
+                f"threshold: net {net_pct:.4f}% < {effective_threshold:.4f}%"
+                + (" (dynamic)" if using_dynamic else "")
             )
 
         # Check 2: Size must be within limits
@@ -264,6 +310,10 @@ class DecisionEngine:
             parts.append(f"depth_size=${m['depth_limited_size_usd']:.2f}")
         if "actual_maker_legs" in m:
             parts.append(f"maker_legs={m['actual_maker_legs']}")
+        if "effective_threshold_pct" in m:
+            parts.append(f"threshold={m['effective_threshold_pct']:.4f}%")
+        if "volatility_sigma" in m:
+            parts.append(f"sigma={m['volatility_sigma']:.4f}")
 
         log_line = " ".join(parts)
 

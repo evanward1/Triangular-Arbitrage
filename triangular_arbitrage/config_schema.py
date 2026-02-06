@@ -382,6 +382,16 @@ class StrategyConfig(BaseModel):
     # Reconciliation
     reconciliation: Optional[ReconciliationConfig] = None
 
+    # Dynamic volatility thresholds (optional)
+    volatility_window_size: Optional[int] = Field(
+        default=None, ge=10, le=10000,
+        description="Rolling window size for volatility-based dynamic thresholds"
+    )
+    sigma_multiplier: Optional[float] = Field(
+        default=None, ge=0.0, le=10.0,
+        description="Standard deviation multiplier for dynamic profit threshold"
+    )
+
     @field_validator("name")
     @classmethod
     def validate_name(cls, v):

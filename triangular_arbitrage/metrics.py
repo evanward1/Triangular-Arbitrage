@@ -7,6 +7,7 @@ Exposes comprehensive trading metrics for monitoring and alerting.
 # asyncio removed - not used in current implementation
 import logging
 import time
+from collections import deque
 from typing import Dict, Any, Optional
 from prometheus_client import (
     Counter,
@@ -465,6 +466,57 @@ class TradingMetrics:
         except Exception as e:
             logger.error(f"Error getting metrics summary: {e}")
             return {"metrics_available": False, "error": str(e)}
+
+
+class VolatilityMonitor:
+    """
+    Rolling-window monitor for net profit volatility.
+
+    Tracks a fixed-size window of net_pct observations and computes
+    moving average and standard deviation. Used by DecisionEngine to
+    derive dynamic profit thresholds.
+    """
+
+    def __init__(self, window_size: int = 100):
+        self.window_size = window_size
+        self._observations: deque = deque(maxlen=window_size)
+
+    def add_observation(self, net_pct: float) -> None:
+        """Record a net profit percentage observation."""
+        self._observations.append(float(net_pct))
+
+    @property
+    def count(self) -> int:
+        """Number of observations currently stored."""
+        return len(self._observations)
+
+    @property
+    def is_ready(self) -> bool:
+        """Whether the window is fully populated."""
+        return len(self._observations) >= self.window_size
+
+    def get_moving_average(self) -> Optional[float]:
+        """Mean of the rolling window, or None if fewer than 2 observations."""
+        if len(self._observations) < 2:
+            return None
+        return sum(self._observations) / len(self._observations)
+
+    def get_sigma(self) -> Optional[float]:
+        """Population standard deviation, or None if fewer than 2 observations."""
+        n = len(self._observations)
+        if n < 2:
+            return None
+        mean = sum(self._observations) / n
+        variance = sum((x - mean) ** 2 for x in self._observations) / n
+        return variance ** 0.5
+
+    def get_dynamic_threshold(self, sigma_multiplier: float) -> Optional[float]:
+        """Compute moving_avg + sigma_multiplier * sigma, or None if insufficient data."""
+        avg = self.get_moving_average()
+        sigma = self.get_sigma()
+        if avg is None or sigma is None:
+            return None
+        return avg + sigma_multiplier * sigma
 
 
 # Global metrics instance (singleton pattern)

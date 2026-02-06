@@ -75,6 +75,8 @@ class StrategyRuntimeConfig:
     min_profit_threshold: float = 0.001
     max_trade_amount_btc: float = 0.1
     fee_rate: float = 0.001
+    volatility_window_size: Optional[int] = None
+    sigma_multiplier: Optional[float] = None
 
 
 def load_yaml_config(config_path: Union[str, Path]) -> Dict[str, Any]:
@@ -332,6 +334,8 @@ def load_strategy_config(config_path: Union[str, Path]) -> StrategyRuntimeConfig
             min_profit_threshold=config_dict.get("min_profit_threshold", 0.001),
             max_trade_amount_btc=config_dict.get("max_trade_amount_btc", 0.1),
             fee_rate=config_dict.get("fee_rate", 0.001),
+            volatility_window_size=config_dict.get("volatility_window_size"),
+            sigma_multiplier=config_dict.get("sigma_multiplier"),
         )
     except Exception as e:
         raise ConfigurationError(f"Failed to normalize configuration: {e}")
