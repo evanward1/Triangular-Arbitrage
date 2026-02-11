@@ -14,12 +14,36 @@ Key Components:
 
 import asyncio
 import logging
-from typing import List
+from typing import Callable, List
 
 from .execution_engine import StrategyExecutionEngine, ConfigurationManager, CycleState
 from .utils import get_logger
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Trade-completion callback registry
+# ---------------------------------------------------------------------------
+# Zero-argument callables registered here are invoked once per completed trade,
+# regardless of whether execution went through execute_cycle() or directly
+# through RealTriangularArbitrage.run_trading_session().  Exceptions raised by
+# callbacks are swallowed so they cannot abort the trade loop.
+
+_trade_callbacks: List[Callable[[], None]] = []
+
+
+def register_trade_callback(fn: Callable[[], None]) -> None:
+    """Register a callable to be invoked on each successfully completed trade."""
+    _trade_callbacks.append(fn)
+
+
+def _fire_trade_callbacks() -> None:
+    """Invoke all registered trade-completion callbacks."""
+    for fn in _trade_callbacks:
+        try:
+            fn()
+        except Exception as exc:
+            logger.warning("Trade callback %r raised: %s", fn, exc)
 
 
 async def calculate_arbitrage_profit(exchange, cycle, initial_amount, min_profit_bps=0):
@@ -373,6 +397,7 @@ async def execute_cycle(
 
     # Log results
     if cycle_info.state == CycleState.COMPLETED:
+        _fire_trade_callbacks()
         print(f"\n--- CYCLE COMPLETED SUCCESSFULLY ---")
         print(f"Initial Amount: {cycle_info.initial_amount:.8f} {cycle_info.cycle[0]}")
         print(
@@ -430,6 +455,8 @@ async def execute_strategy(
     for cycle, amount in zip(cycles, amounts):
         print(f"\nExecuting cycle: {' -> '.join(cycle)} -> {cycle[0]}")
         cycle_info = await engine.execute_cycle(cycle, amount)
+        if cycle_info.state == CycleState.COMPLETED:
+            _fire_trade_callbacks()
         results.append(cycle_info)
 
         # Check if we should stop due to consecutive losses

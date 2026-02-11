@@ -18,8 +18,9 @@ from typing import Any, Deque, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 from pydantic import BaseModel, Field, validator
 
 # Load environment variables from .env file
@@ -72,6 +73,20 @@ import logging_config
 
 logging_config.setup()
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Prometheus Metrics
+# ============================================================================
+
+trades_executed_total = Counter(
+    "trades_executed_total",
+    "Total number of trades executed (CEX paper + live, DEX paper + live)",
+)
+
+current_profit_spread = Gauge(
+    "current_profit_spread",
+    "Most-recent net profit spread in basis points for the last evaluated opportunity",
+)
 
 app = FastAPI(title="Triangular Arbitrage Dashboard")
 
@@ -383,6 +398,12 @@ async def root():
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "bot_running": state.bot_running}
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus scrape endpoint"""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/balance")
@@ -1288,6 +1309,7 @@ async def run_dex_scanner():
                     )
 
                     dex_state.add_opportunity(opp)
+                    current_profit_spread.set(opp.net_bps)
 
                     # Log opportunity found
                     path_str = " → ".join(opp.path)
@@ -1372,6 +1394,8 @@ async def run_dex_scanner():
                             cumulative_pnl += fill.pnl_usd
                             dex_state.add_fill(fill)
                             dex_state.add_equity_point(current_equity, cumulative_pnl)
+                            trades_executed_total.inc()
+                            current_profit_spread.set(fill.net_bps)
 
                             # Broadcast
                             await dex_state.broadcast_ws(
@@ -1755,6 +1779,12 @@ async def update_stats_periodically():
     """Update stats every 5 seconds"""
     while True:
         await asyncio.sleep(5)
+        # Heartbeat: write current epoch so Docker health check can verify liveness
+        try:
+            with open("/tmp/heartbeat", "w") as _hb:
+                _hb.write(str(time.time()))
+        except OSError:
+            pass
         if state.bot_running:
             state.update_from_db()
             await state.broadcast(
@@ -1771,6 +1801,10 @@ async def startup_event():
     """Run on server startup"""
     logger.info("Starting Triangular Arbitrage Dashboard Server")
     state.add_log("Dashboard server started")
+    # Wire CEX trade completions directly into the Prometheus counter so we
+    # never rely on log-string parsing.
+    from triangular_arbitrage.trade_executor import register_trade_callback
+    register_trade_callback(trades_executed_total.inc)
     # Start background stats updater
     asyncio.create_task(update_stats_periodically())
 

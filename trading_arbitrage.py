@@ -24,6 +24,7 @@ from triangular_arbitrage.execution_helpers import (
     leg_timed,
 )
 from triangular_arbitrage.slippage_monitor import SlippageMonitor
+from triangular_arbitrage.trade_executor import _fire_trade_callbacks
 from triangular_arbitrage.validation.breakeven import BreakevenGuard, LegInfo
 
 # Setup logging
@@ -2829,6 +2830,7 @@ class RealTriangularArbitrage:
                     if result.get("success"):
                         executed_count += 1
                         self.execution_stats["full_fills"] += 1
+                        _fire_trade_callbacks()
                         logger.debug(
                             f"✅ Opportunity {opp_idx + 1} executed successfully!"
                         )

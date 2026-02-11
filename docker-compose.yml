@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   arbitrage-dashboard:
     build:
@@ -40,11 +38,83 @@ services:
 
     volumes:
       - ./logs:/app/logs
-      - ./trade_state.db:/app/trade_state.db
+      - trade-state:/app/data
     restart: unless-stopped
+    networks:
+      - arbitrage-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      # Fail if the heartbeat file is missing or older than 60 seconds,
+      # indicating the async event loop has stalled.
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - "import os, time; age = time.time() - os.path.getmtime('/tmp/heartbeat'); exit(0 if age < 60 else 1)"
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 60s
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    networks:
+      - arbitrage-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    restart: unless-stopped
+    networks:
+      - arbitrage-net
+    depends_on:
+      - arbitrage-dashboard
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+    networks:
+      - arbitrage-net
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  arbitrage-net:
+    driver: bridge
+
+volumes:
+  trade-state:
+  prometheus-data:
+  grafana-data:
